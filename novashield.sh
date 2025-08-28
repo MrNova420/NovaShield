@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.0.2 — JARVIS Edition — All‑in‑One Installer & Runtime
+# NovaShield Terminal 3.0.3 — JARVIS Edition — All‑in‑One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
@@ -11,7 +11,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-NS_VERSION="3.0.2"
+NS_VERSION="3.0.3"
 
 NS_HOME="${HOME}/.novashield"
 NS_BIN="${NS_HOME}/bin"
@@ -104,7 +104,7 @@ write_default_config(){
   if [ -f "$NS_CONF" ]; then return 0; fi
   ns_log "Writing default config to $NS_CONF"
   write_file "$NS_CONF" 600 <<'YAML'
-version: "3.0.2"
+version: "3.0.3"
 http:
   host: 127.0.0.1
   port: 8765
@@ -119,6 +119,8 @@ security:
 monitors:
   cpu:         { enabled: true,  interval_sec: 3, warn_load: 2.00, crit_load: 4.00 }
   memory:      { enabled: true,  interval_sec: 3, warn_pct: 80,  crit_pct: 92 }
+  # On Termux, "/" can read 100% because it's a tiny system mount.
+  # We will automatically switch to ~/.novashield at runtime if mount is "/".
   disk:        { enabled: true,  interval_sec: 10, warn_pct: 85, crit_pct: 95, mount: "/" }
   network:     { enabled: true,  interval_sec: 5, iface: "", ping_host: "1.1.1.1", loss_warn: 20 }
   integrity:   { enabled: true,  interval_sec: 60, watch_paths: ["/system/bin","/system/xbin","/usr/bin"] }
@@ -239,7 +241,11 @@ write_notify_py(){
   write_file "${NS_BIN}/notify.py" 700 <<'PY'
 #!/usr/bin/env python3
 import os, sys, json, smtplib, ssl, urllib.request, urllib.parse
-from email.mime.text import MIMEText
+from email.mime_text import MIMEText as _MT
+try:
+  from email.mime.text import MIMEText
+except Exception:
+  MIMEText = _MT
 
 NS_HOME = os.path.expanduser('~/.novashield')
 CONF = os.path.join(NS_HOME, 'config.yaml')
@@ -282,22 +288,23 @@ def send_email(subject, body):
   pwd  = yaml_get('notifications.email.password','')
   to   = yaml_get('notifications.email.to','').strip('[]').replace('"','').split(',')
   use_tls = yaml_get('notifications.email.use_tls','true')=='true'
-  if not (host and user and pwd and to): return
+  tos = [t.strip() for t in to if t.strip()]
+  if not (host and user and pwd and tos): return
   msg = MIMEText(body, 'plain', 'utf-8')
   msg['Subject'] = subject
   msg['From'] = user
-  msg['To'] = ','.join([t.strip() for t in to if t.strip()])
+  msg['To'] = ','.join(tos)
   try:
     if use_tls:
       context = ssl.create_default_context()
       with smtplib.SMTP(host, port, timeout=10) as server:
         server.starttls(context=context)
         server.login(user, pwd)
-        server.sendmail(user, [t.strip() for t in to if t.strip()], msg.as_string())
+        server.sendmail(user, tos, msg.as_string())
     else:
       with smtplib.SMTP(host, port, timeout=10) as server:
         server.login(user, pwd)
-        server.sendmail(user, [t.strip() for t in to if t.strip()], msg.as_string())
+        server.sendmail(user, tos, msg.as_string())
   except Exception:
     pass
 
@@ -360,7 +367,7 @@ backup_snapshot(){
   tar -czf "$tmp_tar" "${incl[@]}" 2>/dev/null || tar -C "$NS_HOME" -czf "$tmp_tar" projects modules config.yaml || true
   local enc_enabled; enc_enabled=$(awk -F': ' '/encrypt:/ {print $2}' "$NS_CONF" | head -n1 | tr -d ' ')
   local final
-  if [ "$enc_enabled" = "true" ]; then
+  if [ "$enc_enabled" = "true" ] then
     final="${dest_dir}/backup-${stamp}.tar.gz.enc"; enc_file "$tmp_tar" "$final"; rm -f "$tmp_tar"
   else
     final="${dest_dir}/backup-${stamp}.tar.gz"; mv "$tmp_tar" "$final"
@@ -389,8 +396,29 @@ version_snapshot(){
 monitor_enabled(){ local name="$1"; [ -f "${NS_CTRL}/${name}.disabled" ] && return 1 || return 0; }
 write_json(){ local path="$1"; shift; printf '%s' "$*" >"$path"; }
 
+# Helper: get internal IP on Termux without netlink; fallback to ifconfig/ip.
+ns_internal_ip(){
+  local iface="$1" ip=""
+  if [ "$IS_TERMUX" -eq 1 ] && command -v getprop >/dev/null 2>&1; then
+    ip=$(getprop dhcp.wlan0.ipaddress 2>/dev/null || true)
+    [ -z "$ip" ] && ip=$(getprop dhcp.eth0.ipaddress 2>/dev/null || true)
+    if [ -z "$ip" ]; then
+      ip=$(getprop 2>/dev/null | awk -F'[][]' '/dhcp\..*\.ipaddress]/{print $3}' | head -n1)
+    fi
+  fi
+  if [ -z "$ip" ] && command -v ifconfig >/dev/null 2>&1; then
+    ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -n1)
+    [ -z "$ip" ] && ip=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -n1)
+  fi
+  if [ -z "$ip" ] && command -v ip >/dev/null 2>&1; then
+    ip=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    [ -z "$ip" ] && ip=$(ip -o -4 addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1)
+  fi
+  echo "$ip"
+}
+
 _monitor_cpu(){
-  set +e
+  set +e; set +o pipefail
   local interval warn crit
   interval=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 3)
   warn=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /warn_load/) print $2 }' "$NS_CONF" | tr -d ' ')
@@ -408,7 +436,7 @@ _monitor_cpu(){
 }
 
 _monitor_mem(){
-  set +e
+  set +e; set +o pipefail
   local interval warn crit
   interval=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 3)
   warn=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' '); warn=$(ensure_int "${warn:-}" 80)
@@ -432,13 +460,16 @@ _monitor_mem(){
 }
 
 _monitor_disk(){
-  set +e
+  set +e; set +o pipefail
   local interval warn crit mount
   interval=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 10)
   warn=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' '); warn=$(ensure_int "${warn:-}" 85)
   crit=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' '); crit=$(ensure_int "${crit:-}" 95)
   mount=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /mount:/) print $2 }' "$NS_CONF" | tr -d '" ')
   [ -z "$mount" ] && mount="/"
+  if [ "$IS_TERMUX" -eq 1 ] && [ "$mount" = "/" ]; then
+    mount="$NS_HOME"
+  fi
   while true; do
     monitor_enabled disk || { sleep "$interval"; continue; }
     local use; use=$(df -P "$mount" | awk 'END {gsub("%","",$5); print $5+0}')
@@ -450,7 +481,7 @@ _monitor_disk(){
 }
 
 _monitor_net(){
-  set +e
+  set +e; set +o pipefail
   local interval iface pingh warnloss
   interval=$(awk -F': ' '/network:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 5)
   iface=$(awk -F': ' '/network:/,/}/ { if($1 ~ /iface:/) print $2 }' "$NS_CONF" | tr -d '" ')
@@ -459,13 +490,7 @@ _monitor_net(){
   while true; do
     monitor_enabled network || { sleep "$interval"; continue; }
     local ip pubip loss=0 avg=0
-    if command -v ip >/dev/null 2>&1; then
-      ip=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
-      [ -z "$ip" ] && ip=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1)
-    elif command -v ifconfig >/dev/null 2>&1; then
-      ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -n1)
-      [ -z "$ip" ] && ip=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -n1)
-    fi
+    ip="$(ns_internal_ip "$iface")"
     if command -v ping >/dev/null 2>&1; then
       local out; out=$(ping -c 3 -w 3 "$pingh" 2>/dev/null || true)
       loss=$(echo "$out" | awk -F',' '/packet loss/ {gsub("%","",$3); gsub(" ","",$3); print $3+0}' 2>/dev/null || echo 0)
@@ -484,7 +509,7 @@ _monitor_net(){
 }
 
 _monitor_integrity(){
-  set +e
+  set +e; set +o pipefail
   local interval; interval=$(awk -F': ' '/integrity:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 60)
   local list; list=$(awk -F'- ' '/watch_paths:/{flag=1;next}/]/{flag=0}flag{print $2}' "$NS_CONF" 2>/dev/null || true)
   while true; do
@@ -512,7 +537,7 @@ _monitor_integrity(){
 }
 
 _monitor_process(){
-  set +e
+  set +e; set +o pipefail
   local interval suspicious; interval=$(awk -F': ' '/process:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 10)
   suspicious=$(awk -F'[][]' '/process:/,/\}/ { if($0 ~ /suspicious:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '\n')
   while true; do
@@ -530,7 +555,7 @@ _monitor_process(){
 }
 
 _monitor_userlogins(){
-  set +e
+  set +e; set +o pipefail
   local interval; interval=$(awk -F': ' '/userlogins:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 30)
   local prev_hash=""
   while true; do
@@ -552,7 +577,7 @@ PY
 }
 
 _monitor_services(){
-  set +e
+  set +e; set +o pipefail
   local interval targets; interval=$(awk -F': ' '/services:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 20)
   targets=$(awk -F'[][]' '/services:/,/\}/ { if($0 ~ /targets:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '\n')
   while true; do
@@ -571,7 +596,7 @@ _monitor_services(){
 }
 
 _monitor_logs(){
-  set +e
+  set +e; set +o pipefail
   local interval; interval=$(awk -F': ' '/logs:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 15)
   local files patterns; files=$(awk -F'[][]' '/logs:/,/\}/ { if($0 ~ /files:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' ' ')
   patterns=$(awk -F'[][]' '/logs:/,/\}/ { if($0 ~ /patterns:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '|')
@@ -602,7 +627,7 @@ _monitor_logs(){
 }
 
 _supervisor(){
-  set +e
+  set +e; set +o pipefail
   local interval=10
   while true; do
     for p in cpu memory disk network integrity process userlogins services logs; do
@@ -633,7 +658,7 @@ _supervisor(){
 }
 
 _monitor_scheduler(){
-  set +e
+  set +e; set +o pipefail
   local interval; interval=$(awk -F': ' '/scheduler:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 30)
   : >"$NS_SCHED_STATE" || true
   while true; do
@@ -745,7 +770,6 @@ def write_json(path, obj):
     with open(path,'w',encoding='utf-8') as f: f.write(json.dumps(obj))
 
 def yaml_scalar(key):
-    # very simple "key: value" parser stripping comments
     try:
         for line in open(CONFIG,'r',encoding='utf-8'):
             s=line.split('#',1)[0].strip()
@@ -836,13 +860,13 @@ def ai_reply(prompt):
     if 'status' in prompt_low or 'health' in prompt_low:
         return f"[{now}] CPU {status['cpu'].get('load1','?')} | Mem {status['mem'].get('used_pct','?')}% | Disk {status['disk'].get('use_pct','?')}% | Loss {status['net'].get('loss_pct','?')}%."
     if 'backup' in prompt_low:
-        os.system(f'"{read_text(SELF_PATH_FILE).strip()}" --backup >/dev/null 2>&1 &')
+        os.system(f'\"{read_text(SELF_PATH_FILE).strip()}\" --backup >/dev/null 2>&1 &')
         return "Acknowledged. Snapshot backup started."
     if 'version' in prompt_low or 'snapshot' in prompt_low:
-        os.system(f'"{read_text(SELF_PATH_FILE).strip()}" --version-snapshot >/dev/null 2>&1 &')
+        os.system(f'\"{read_text(SELF_PATH_FILE).strip()}\" --version-snapshot >/dev/null 2>&1 &')
         return "Version snapshot underway."
     if 'restart monitor' in prompt_low:
-        os.system(f'"{read_text(SELF_PATH_FILE).strip()}" --restart-monitors >/dev/null 2>&1 &')
+        os.system(f'\"{read_text(SELF_PATH_FILE).strip()}\" --restart-monitors >/dev/null 2>&1 &')
         return "Restarting monitors."
     if 'ip' in prompt_low:
         return f"Internal IP {status['net'].get('ip','?')} | Public {status['net'].get('public_ip','?')}."
@@ -886,7 +910,7 @@ class Handler(SimpleHTTPRequestHandler):
                 'user': read_json(os.path.join(NS_LOGS,'user.json'),{}),
                 'services': read_json(os.path.join(NS_LOGS,'service.json'),{}),
                 'logwatch': read_json(os.path.join(NS_LOGS,'logwatch.json'),{}),
-                'alerts': last_lines(os.path.join(NS_LOGS, 'alerts.log'), 200),
+                'alerts': (lambda p: (open(p,'r',encoding='utf-8').read().splitlines()[-100:]) if os.path.exists(p) else [])(os.path.join(NS_LOGS,'alerts.log')),
                 'projects_count': len([x for x in os.listdir(os.path.join(NS_HOME, 'projects')) if not x.startswith('.')]) if os.path.exists(os.path.join(NS_HOME, 'projects')) else 0,
                 'modules_count': len([x for x in os.listdir(os.path.join(NS_HOME, 'modules')) if not x.startswith('.')]) if os.path.exists(os.path.join(NS_HOME, 'modules')) else 0,
                 'version': read_text(os.path.join(NS_HOME, 'version.txt'), 'unknown'),
@@ -900,7 +924,11 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(parsed.query); name = (q.get('name', ['launcher.log'])[0]).replace('..','')
             p = os.path.join(NS_HOME, name); 
             if not os.path.exists(p): p = os.path.join(NS_LOGS, name)
-            self._set_headers(200); self.wfile.write(json.dumps({'name': name, 'lines': last_lines(p, 200)}).encode('utf-8')); return
+            lines = []
+            try:
+                with open(p,'r',encoding='utf-8') as f: lines=f.read().splitlines()[-200:]
+            except Exception: pass
+            self._set_headers(200); self.wfile.write(json.dumps({'name': name, 'lines': lines}).encode('utf-8')); return
         if parsed.path == '/api/fs':
             if not require_auth(self): return
             q = parse_qs(parsed.query); d = q.get('dir',[''])[0]
@@ -949,9 +977,9 @@ class Handler(SimpleHTTPRequestHandler):
             self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
             if action in ('backup','version','restart_monitors'):
                 try:
-                    if action=='backup': os.system(f'"{self_path}" --backup >/dev/null 2>&1 &')
-                    if action=='version': os.system(f'"{self_path}" --version-snapshot >/dev/null 2>&1 &')
-                    if action=='restart_monitors': os.system(f'"{self_path}" --restart-monitors >/dev/null 2>&1 &')
+                    if action=='backup': os.system(f'\"{self_path}\" --backup >/dev/null 2>&1 &')
+                    if action=='version': os.system(f'\"{self_path}\" --version-snapshot >/dev/null 2>&1 &')
+                    if action=='restart_monitors': os.system(f'\"{self_path}\" --restart-monitors >/dev/null 2>&1 &')
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
@@ -1004,7 +1032,6 @@ def pick_host_port():
         if p: port = p
     except Exception:
         pass
-    # sanitize host: if invalid, fallback to 127.0.0.1
     try:
         socket.getaddrinfo(host, port)
     except Exception:
@@ -1014,7 +1041,6 @@ def pick_host_port():
 if __name__ == '__main__':
     host, port = pick_host_port()
     os.chdir(NS_WWW)
-    # Try bind host; fallback chain
     for h in (host, '127.0.0.1', '0.0.0.0'):
         try:
             httpd = HTTPServer((h, port), Handler)
@@ -1260,7 +1286,6 @@ setup_termux_service(){
 #!/data/data/com.termux/files/usr/bin/sh
 exec python3 "${NS_WWW}/server.py" >>"${NS_HOME}/web.log" 2>&1
 RUN
-  # Try enable; ignore failure (service manager may not be ready yet)
   sv-enable novashield || ns_warn "termux-services enable failed (non-blocking)"
   ns_ok "Termux service installed: sv-enable novashield"
 }
