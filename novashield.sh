@@ -1323,10 +1323,12 @@ class Handler(SimpleHTTPRequestHandler):
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             if action == 'disable' and target:
-                try: open(flag,'w').close()
+                try:
+                    open(flag,'w').close()
                     audit(f'MONITOR DISABLE {target} ip={self.client_address[0]}')
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
-                except Exception: pass
+                except Exception:
+                    pass
             self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
             if action in ('backup','version','restart_monitors'):
                 try:
