@@ -1,72 +1,240 @@
-# NovaShield-
-Custom private secured encrypted terminal NovaShield Terminal? In beta 
-Quick start
+# NovaShield Terminal 3.1.0 — JARVIS Edition
 
-I built you a single, self-contained script that sets up the entire NovaShield Terminal 2.0 project end-to-end (installer + runtime). It:
+**Secure, encrypted terminal environment with real web dashboard, PTY terminal, and advanced security features**
 
-Detects Termux vs Linux, installs deps, creates the full directory tree.
+## Features
 
-Generates RSA + AES keys, encryption helpers (file/dir encrypt/decrypt).
+### 🚀 What's New in 3.1.0
 
-Starts 5 background monitors (CPU, memory, disk, network, integrity).
+- **Real Web Terminal (PTY over WebSockets)** - Full terminal access through your browser with idle timeout and audit logging
+- **Enhanced Security** - 2FA/TOTP support, CSRF protection, rate limiting, IP allow/deny lists, optional TLS with self-signed certs
+- **Advanced File Manager** - Clickable interface with file viewer, mkdir, and save operations
+- **Security-First Defaults** - Authentication enabled by default (`security.auth_enabled: true`)
+- **Comprehensive Audit Logging** - Track login, control, terminal, file operations, and more
+- **Improved Termux Support** - Better monitor stability, no netlink dependencies, automatic disk mount detection
 
-Spins up a Python web dashboard (no external libs) with live status/alerts.
+### 🔐 Security Features
 
-Adds backup + version snapshots, rotation, and manual overrides.
+- **Authentication & Authorization** - User login system with session management
+- **Two-Factor Authentication (2FA/TOTP)** - Compatible with Google Authenticator, Authy, etc.
+- **TLS Support** - Optional HTTPS with auto-generated self-signed certificates
+- **Rate Limiting** - Configurable request limits per minute
+- **Account Lockout** - Temporary lockouts after failed login attempts
+- **CSRF Protection** - Cross-site request forgery protection for POST requests
+- **Secure Headers** - X-Frame-Options, X-XSS-Protection, Content-Security-Policy, etc.
+- **IP Allow/Deny Lists** - Control access by IP address
+- **Audit Logging** - Complete audit trail of security-sensitive actions
 
-Supports Termux services or systemd-user (when available).
+### 🖥️ Terminal Features
 
-Provides a CLI + interactive menu.
+- **Real PTY Terminal** - Full pseudo-terminal with WebSocket streaming
+- **Multiple Sessions** - Support for multiple concurrent terminal sessions
+- **Idle Timeout** - Automatic session cleanup after inactivity
+- **Command Auditing** - Optional logging of all terminal commands
+- **Auto Shell Detection** - Termux-aware shell selection (`/data/data/.../bash` or system shell)
 
+### 📁 File Management
 
-I put the complete all-in-one script in the canvas (left panel) as “NovaShield Terminal 2.0 — All-in-One Installer & Runtime (novashield.sh)”. Save it as novashield.sh, make it executable, and run the steps below.
+- **Interactive File Browser** - Click to navigate directories and open files
+- **File Editor** - Built-in editor for text files
+- **Directory Operations** - Create new folders with mkdir
+- **File Operations** - Create and save files directly through the web interface
+- **Permission Aware** - Respects file system permissions
 
-# 1) Save the script
-nano novashield.sh   # paste the canvas contents
+## Quick Start
+
+### 1. Install NovaShield
+
+```bash
+# Download and make executable
+curl -O https://raw.githubusercontent.com/MrNova420/NovaShield/main/novashield.sh
 chmod +x novashield.sh
 
-# 2) One-shot install (creates ~/.novashield and all subfiles)
+# One-shot install (creates ~/.novashield and all components)
 ./novashield.sh --install
+```
 
-# 3) Start everything (monitors + web dashboard)
+### 2. Set Up Security
+
+```bash
+# Add a user (required since auth is enabled by default)
+./novashield.sh --add-user
+
+# Optional: Enable 2FA for enhanced security
+./novashield.sh --enable-2fa
+```
+
+### 3. Start NovaShield
+
+```bash
+# Start all services (monitors + web dashboard)
 ./novashield.sh --start
 
-# 4) (optional) Check status
-./novashield.sh --status
+# Open the dashboard
+open http://127.0.0.1:8765
+```
 
-Then open the local dashboard (by default):
-http://127.0.0.1:8765
+## Commands
 
-Useful commands
+```bash
+./novashield.sh --install        # Initial setup and installation
+./novashield.sh --start          # Start all services
+./novashield.sh --stop           # Stop all services
+./novashield.sh --status         # Show system status
+./novashield.sh --add-user       # Add web dashboard user
+./novashield.sh --enable-2fa     # Enable 2FA for a user
+./novashield.sh --backup         # Create encrypted backup
+./novashield.sh --restart-monitors # Restart monitoring services
+./novashield.sh --menu           # Interactive TUI menu
+```
 
-./novashield.sh --menu – interactive TUI for common actions
+## Security Configuration
 
-./novashield.sh --backup – encrypted snapshot with rotation
+### Enable TLS (HTTPS)
 
-./novashield.sh --version-snapshot – copy of modules/projects/config/logs
+```yaml
+# In ~/.novashield/config.yaml
+security:
+  tls_enabled: true
+  tls_cert_file: "keys/server.crt"
+  tls_key_file: "keys/server.key"
+```
 
-./novashield.sh --encrypt <path> / --decrypt <file.enc> – AES-256 via OpenSSL
+NovaShield will automatically generate self-signed certificates when TLS is enabled.
 
-./novashield.sh --restart-monitors – bounce the background monitors
+### Configure Rate Limiting
 
-./novashield.sh --web-start / --web-stop – control the dashboard server
+```yaml
+security:
+  rate_limit_per_min: 60
+  lockout_threshold: 5
+  lockout_duration_min: 15
+```
 
-./novashield.sh --stop – stop everything
+### IP Access Control
 
+```yaml
+security:
+  ip_allow_list: ["192.168.1.0/24", "10.0.0.0/8"]
+  ip_deny_list: ["192.168.1.100"]
+```
 
-Notes & next steps
+### Terminal Settings
 
-Termux services: If termux-services is installed, the script drops a service at ~/.termux/services/novashield. You can enable/disable with sv-enable novashield / sv-disable novashield.
+```yaml
+terminal:
+  enabled: true
+  idle_timeout_min: 30
+  max_sessions: 5
+  shell_command: "/bin/bash"  # Auto-detected if empty
+  audit_commands: true
+```
 
-systemd-user (Linux): Creates ~/.config/systemd/user/novashield.service. Enable with:
+### Audit Logging
 
-systemctl --user enable --now novashield
+```yaml
+audit:
+  enabled: true
+  log_file: "logs/audit.log"
+  actions: ["login", "logout", "control", "terminal", "file_ops", "webgen", "backup"]
+```
 
-LAN access: To expose the dashboard on your LAN, set allow_lan: true in ~/.novashield/config.yaml and restart.
+## Platform Support
 
-Security: Keys live in ~/.novashield/keys/ with 600 perms. Backups can be encrypted by default. Keep your AES key safe.
+### Linux
+- **Distributions**: Debian, Ubuntu, Arch, Fedora, CentOS
+- **Services**: systemd-user integration
+- **Networking**: Full feature support
 
-Extend: Drop your own scripts into ~/.novashield/modules/ and your work into ~/.novashield/projects/.
+### Termux (Android)
+- **Dependencies**: Auto-installs `openssl-tool`, `termux-services`
+- **Services**: Termux services integration (`sv-enable novashield`)
+- **Monitoring**: Termux-optimized monitors (no netlink dependencies)
+- **Storage**: Auto-detects Termux paths and permissions
 
+## Security Best Practices
 
-If you want me to also package this into a ready-to-push GitHub repo layout (README, LICENSE, .gitignore, screenshots), say the word and I’ll generate those files too.
+### For Production Use
+
+1. **Enable TLS**: Set `security.tls_enabled: true`
+2. **Use Strong Authentication**: Enable 2FA for all users
+3. **Restrict Network Access**: Use IP allow lists or firewall rules
+4. **Regular Backups**: Set up automated encrypted backups
+5. **Monitor Logs**: Review audit logs regularly
+6. **Update Regularly**: Keep NovaShield updated to the latest version
+
+### For LAN Access
+
+```yaml
+# In ~/.novashield/config.yaml
+http:
+  allow_lan: true  # Binds to 0.0.0.0 instead of 127.0.0.1
+
+# Recommended with LAN access:
+security:
+  auth_enabled: true
+  tls_enabled: true
+  rate_limit_per_min: 30
+```
+
+⚠️ **Warning**: Only enable LAN access with proper authentication and preferably TLS enabled.
+
+## Dashboard Features
+
+### Status Tab
+- Real-time system metrics (CPU, memory, disk, network)
+- Color-coded alerts (OK/WARN/CRIT)
+- Monitor control toggles
+
+### Terminal Tab
+- Full PTY terminal access
+- Multiple session support
+- Connection status indicator
+- Session management controls
+
+### Files Tab
+- Directory navigation
+- File/folder creation
+- Built-in text editor
+- Permission-aware operations
+
+### Jarvis AI Assistant
+- Context-aware help
+- System status queries
+- IP address lookup
+- Command assistance
+
+### Web Builder
+- Simple webpage creation
+- HTML content editor
+- Static site generation
+
+## Architecture
+
+NovaShield uses a single-file design that generates all components at runtime:
+
+```
+~/.novashield/
+├── config.yaml          # Main configuration
+├── keys/                 # RSA, AES, and TLS keys
+├── www/                  # Generated web assets
+│   ├── server.py        # Python web server
+│   ├── index.html       # Dashboard interface
+│   ├── style.css        # Styling
+│   └── app.js          # Frontend logic
+├── logs/                # System and audit logs
+├── control/             # Monitor control flags
+└── sessions.json        # User sessions and 2FA secrets
+```
+
+## License
+
+MIT License - see the repository for full license text.
+
+## Contributing
+
+This project welcomes contributions! Please see the GitHub repository for contributing guidelines.
+
+---
+
+**NovaShield 3.1.0** - Secure, feature-rich terminal environment for Termux and Linux
