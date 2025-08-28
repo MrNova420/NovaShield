@@ -1998,21 +1998,6 @@ stop_all(){
   close_session
 }
 
-# ADD: drop this right after enable_2fa() and before usage()
-ensure_auth_bootstrap(){
-  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
-  [ "$enabled" = "true" ] || return 0
-  local have_user
-  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
-import json,sys
-p=sys.argv[1]
-try: j=json.load(open(p))
-except: j={}
-ud=j.get('_userdb',{}) or {}
-print('yes' if len(ud)>0 else 'no')
-PY
-)
-
 restart_monitors(){ stop_monitors || true; start_monitors; }
 
 add_user(){
