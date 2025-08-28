@@ -355,6 +355,7 @@ backup_snapshot(){
   local tmp_tar="${NS_TMP}/backup-${stamp}.tar.gz"
   local dest_dir="${NS_HOME}/backups"; mkdir -p "$dest_dir"
   ns_log "Creating backup snapshot: $stamp"
+
   local incl=( )
   while IFS= read -r line; do
     case "$line" in
@@ -364,16 +365,24 @@ backup_snapshot(){
     esac
   done < <(awk '/backup:/,0' "$NS_CONF" 2>/dev/null || true)
   [ ${#incl[@]} -eq 0 ] && incl=("$NS_PROJECTS" "$NS_MODULES" "$NS_CONF")
+
   tar -czf "$tmp_tar" "${incl[@]}" 2>/dev/null || tar -C "$NS_HOME" -czf "$tmp_tar" projects modules config.yaml || true
+
   local enc_enabled; enc_enabled=$(awk -F': ' '/encrypt:/ {print $2}' "$NS_CONF" | head -n1 | tr -d ' ')
   local final
-  if [ "$enc_enabled" = "true" ] then
-    final="${dest_dir}/backup-${stamp}.tar.gz.enc"; enc_file "$tmp_tar" "$final"; rm -f "$tmp_tar"
+  if [ "$enc_enabled" = "true" ]; then
+    final="${dest_dir}/backup-${stamp}.tar.gz.enc"
+    enc_file "$tmp_tar" "$final"
+    rm -f "$tmp_tar"
   else
-    final="${dest_dir}/backup-${stamp}.tar.gz"; mv "$tmp_tar" "$final"
+    final="${dest_dir}/backup-${stamp}.tar.gz"
+    mv "$tmp_tar" "$final"
   fi
-  ns_ok "Backup created: $final"; rotate_backups
+
+  ns_ok "Backup created: $final"
+  rotate_backups
 }
+
 
 rotate_backups(){
   local max_keep; max_keep=$(awk -F': ' '/max_keep:/ {print $2}' "$NS_CONF" | tr -d ' ' || echo 10)
