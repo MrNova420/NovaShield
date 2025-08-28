@@ -886,22 +886,29 @@ stop_monitors(){
 write_server_py(){
   write_file "${NS_WWW}/server.py" 700 <<'PY'
 #!/usr/bin/env python3
-import json, os, sys, time, hashlib, http.cookies, socket
+import json, os, sys, time, hashlib, http.cookies, socket, ssl, threading, subprocess, select, struct, base64, hmac, secrets
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
+import socketserver
 
 NS_HOME = os.path.expanduser('~/.novashield')
 NS_WWW  = os.path.join(NS_HOME, 'www')
 NS_LOGS = os.path.join(NS_HOME, 'logs')
 NS_CTRL = os.path.join(NS_HOME, 'control')
 NS_BIN  = os.path.join(NS_HOME, 'bin')
+NS_KEYS = os.path.join(NS_HOME, 'keys')
 SELF_PATH_FILE = os.path.join(NS_BIN, 'self_path')
 INDEX = os.path.join(NS_WWW, 'index.html')
 CONFIG = os.path.join(NS_HOME, 'config.yaml')
 SESSIONS = os.path.join(NS_CTRL, 'sessions.json')
 CHATLOG = os.path.join(NS_LOGS, 'chat.log')
+AUDIT_LOG = os.path.join(NS_LOGS, 'audit.log')
 SITE_DIR = os.path.join(NS_HOME, 'site')
+RATE_LIMIT_DB = os.path.join(NS_CTRL, 'rate_limits.json')
+
+# Global WebSocket connections tracking
+terminal_connections = {}
 
 def read_text(path, default=''):
     try: return open(path,'r',encoding='utf-8').read()
@@ -918,6 +925,777 @@ def read_json(path, default=None):
 def write_json(path, obj):
     Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
     with open(path,'w',encoding='utf-8') as f: f.write(json.dumps(obj))
+
+def audit_log(action, user='system', details=''):
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        with open(AUDIT_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"{timestamp} {user} {action} {details}\\n")
+    except:
+        pass
+
+def yaml_scalar(key, default=''):
+    try:
+        for line in open(CONFIG,'r',encoding='utf-8'):
+            s = line.split('#',1)[0].strip()
+            if not s: continue
+            if s.startswith(key+':'):
+                return s.split(':',1)[1].strip().strip('"').strip("'")
+    except Exception: pass
+    return default
+
+def yaml_flag(key, default=False):
+    v = yaml_scalar(key, str(default)).lower()
+    return v == 'true'
+
+def auth_enabled():
+    return yaml_flag('security.auth_enabled', False)
+
+def totp_enabled():
+    return yaml_flag('security.totp_enabled', False)
+
+def csrf_enabled():
+    return yaml_flag('security.csrf_enabled', True)
+
+def tls_enabled():
+    return yaml_flag('security.tls_enabled', False)
+
+def rate_limit_enabled():
+    return yaml_flag('security.rate_limit_enabled', True)
+
+def auth_salt():
+    return yaml_scalar('security.auth_salt', 'changeme')
+
+def users_list():
+    db = read_json(SESSIONS, {}) or {}
+    return db.get('_userdb', {})
+
+def check_login(username, password):
+    salt = auth_salt()
+    sha = hashlib.sha256((salt+':'+password).encode()).hexdigest()
+    return users_list().get(username,'') == sha
+
+def get_totp_secret(username):
+    secret_file = os.path.join(NS_KEYS, f'totp_{username}.secret')
+    try:
+        with open(secret_file, 'r') as f:
+            return f.read().strip()
+    except:
+        return None
+
+def verify_totp(username, code):
+    secret = get_totp_secret(username)
+    if not secret:
+        return False
+    
+    try:
+        key = base64.b32decode(secret.upper() + '=' * (8 - len(secret) % 8))
+        counter = int(time.time() // 30)
+        
+        for window in [counter, counter - 1]:
+            counter_bytes = struct.pack('>Q', window)
+            hmac_digest = hmac.new(key, counter_bytes, hashlib.sha1).digest()
+            offset = hmac_digest[-1] & 0x0f
+            totp_code = struct.unpack('>I', hmac_digest[offset:offset+4])[0] & 0x7fffffff
+            totp_code = str(totp_code % 1000000).zfill(6)
+            if totp_code == code:
+                return True
+        return False
+    except:
+        return False
+
+def new_session(username):
+    token = hashlib.sha256(f'{username}:{time.time()}'.encode()).hexdigest()
+    db = read_json(SESSIONS, {}) or {}
+    csrf_token = secrets.token_urlsafe(32) if csrf_enabled() else ''
+    db[token] = {'user': username, 'ts': int(time.time()), 'csrf_token': csrf_token}
+    write_json(SESSIONS, db)
+    return token
+
+def get_session(handler):
+    if not auth_enabled(): 
+        return {'user': 'public', 'csrf_token': ''}
+    if 'Cookie' not in handler.headers: 
+        return None
+    C = http.cookies.SimpleCookie()
+    C.load(handler.headers['Cookie'])
+    if 'NSSESS' not in C: 
+        return None
+    token = C['NSSESS'].value
+    db = read_json(SESSIONS, {}) or {}
+    session = db.get(token)
+    if session:
+        timeout = int(yaml_scalar('security.session_timeout', '3600'))
+        if int(time.time()) - session.get('ts', 0) > timeout:
+            del db[token]
+            write_json(SESSIONS, db)
+            return None
+    return session
+
+def check_rate_limit(client_ip):
+    if not rate_limit_enabled():
+        return True
+    
+    db = read_json(RATE_LIMIT_DB, {}) or {}
+    now = int(time.time())
+    window = int(yaml_scalar('security.rate_limit_window', '60'))
+    max_requests = int(yaml_scalar('security.rate_limit_requests', '30'))
+    lockout_time = int(yaml_scalar('security.rate_limit_lockout', '300'))
+    
+    if client_ip not in db:
+        db[client_ip] = {'requests': [], 'locked_until': 0}
+    
+    client_data = db[client_ip]
+    
+    if client_data['locked_until'] > now:
+        return False
+    
+    client_data['requests'] = [req for req in client_data['requests'] if req > now - window]
+    
+    if len(client_data['requests']) >= max_requests:
+        client_data['locked_until'] = now + lockout_time
+        write_json(RATE_LIMIT_DB, db)
+        audit_log('rate_limit_exceeded', 'system', f'IP: {client_ip}')
+        return False
+    
+    client_data['requests'].append(now)
+    write_json(RATE_LIMIT_DB, db)
+    return True
+
+def require_auth(handler):
+    if not auth_enabled(): 
+        return True
+    sess = get_session(handler)
+    if sess: 
+        return True
+    handler._set_headers(401)
+    handler.wfile.write(b'{"error":"unauthorized"}')
+    return False
+
+def require_csrf(handler, data):
+    if not csrf_enabled():
+        return True
+    if not auth_enabled():
+        return True
+    
+    sess = get_session(handler)
+    if not sess:
+        return False
+        
+    csrf_token = data.get('csrf_token', '')
+    if sess.get('csrf_token') != csrf_token:
+        handler._set_headers(403)
+        handler.wfile.write(b'{"error":"csrf_token_invalid"}')
+        return False
+    return True
+
+# WebSocket handshake implementation
+def websocket_handshake(handler):
+    key = handler.headers.get('Sec-WebSocket-Key')
+    if not key:
+        return False
+    
+    magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+    accept = base64.b64encode(hashlib.sha1((key + magic).encode()).digest()).decode()
+    
+    handler.send_response(101)
+    handler.send_header('Upgrade', 'websocket')
+    handler.send_header('Connection', 'Upgrade')
+    handler.send_header('Sec-WebSocket-Accept', accept)
+    handler.end_headers()
+    return True
+
+# Simple WebSocket frame handling
+def send_websocket_frame(socket, data):
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    
+    length = len(data)
+    if length < 126:
+        frame = struct.pack('!BB', 0x81, length) + data
+    elif length < 65536:
+        frame = struct.pack('!BBH', 0x81, 126, length) + data
+    else:
+        frame = struct.pack('!BBQ', 0x81, 127, length) + data
+    
+    try:
+        socket.sendall(frame)
+    except:
+        pass
+
+def read_websocket_frame(socket):
+    try:
+        header = socket.recv(2)
+        if len(header) != 2:
+            return None
+        
+        fin = header[0] & 0x80
+        opcode = header[0] & 0x0f
+        masked = header[1] & 0x80
+        length = header[1] & 0x7f
+        
+        if length == 126:
+            length = struct.unpack('!H', socket.recv(2))[0]
+        elif length == 127:
+            length = struct.unpack('!Q', socket.recv(8))[0]
+        
+        if masked:
+            mask = socket.recv(4)
+            data = socket.recv(length)
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        else:
+            data = socket.recv(length)
+        
+        return data.decode('utf-8') if opcode == 1 else data
+    except:
+        return None
+
+def handle_terminal_websocket(handler):
+    if not yaml_flag('terminal.enabled', True):
+        handler._set_headers(403)
+        handler.wfile.write(b'{"error":"terminal_disabled"}')
+        return
+    
+    # Check authentication
+    if not require_auth(handler):
+        return
+    
+    # Perform WebSocket handshake
+    if not websocket_handshake(handler):
+        return
+    
+    # Get session info
+    session = get_session(handler)
+    user = session.get('user', 'anonymous') if session else 'anonymous'
+    
+    # Start PTY
+    shell = yaml_scalar('terminal.shell', '/bin/bash')
+    work_dir = os.path.join(NS_HOME, yaml_scalar('terminal.working_directory', 'projects'))
+    
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+        import pty
+        master, slave = pty.openpty()
+        
+        proc = subprocess.Popen([shell], 
+                              stdin=slave, 
+                              stdout=slave, 
+                              stderr=slave,
+                              cwd=work_dir,
+                              preexec_fn=os.setsid)
+        
+        os.close(slave)
+        
+        # Track connection
+        conn_id = len(terminal_connections)
+        terminal_connections[conn_id] = {
+            'master': master,
+            'proc': proc,
+            'user': user,
+            'start_time': time.time()
+        }
+        
+        audit_log('terminal_connect', user, f'connection_id: {conn_id}')
+        
+        # Handle WebSocket communication
+        socket_fd = handler.connection.fileno()
+        
+        while True:
+            ready, _, _ = select.select([master, socket_fd], [], [], 1.0)
+            
+            if master in ready:
+                try:
+                    data = os.read(master, 1024)
+                    if data:
+                        send_websocket_frame(handler.connection, data.decode('utf-8', errors='replace'))
+                except:
+                    break
+            
+            if socket_fd in ready:
+                frame_data = read_websocket_frame(handler.connection)
+                if frame_data is None:
+                    break
+                
+                if frame_data:
+                    try:
+                        os.write(master, frame_data.encode('utf-8'))
+                    except:
+                        break
+            
+            # Check if process is still alive
+            if proc.poll() is not None:
+                break
+        
+        # Cleanup
+        try:
+            proc.terminate()
+            os.close(master)
+        except:
+            pass
+        
+        if conn_id in terminal_connections:
+            del terminal_connections[conn_id]
+        
+        audit_log('terminal_disconnect', user, f'connection_id: {conn_id}')
+        
+    except Exception as e:
+        audit_log('terminal_error', user, str(e))
+
+# File Manager API
+def handle_file_api(handler, parsed, body):
+    if not yaml_flag('file_manager.enabled', True):
+        handler._set_headers(403)
+        handler.wfile.write(b'{"error":"file_manager_disabled"}')
+        return
+    
+    if not require_auth(handler):
+        return
+    
+    try:
+        data = json.loads(body or '{}')
+    except:
+        data = {}
+    
+    if not require_csrf(handler, data):
+        return
+    
+    session = get_session(handler)
+    user = session.get('user', 'anonymous') if session else 'anonymous'
+    
+    # Sandbox to .novashield directory
+    sandbox_root = os.path.join(NS_HOME, yaml_scalar('file_manager.sandbox_root', '.'))
+    
+    action = parsed.path.split('/')[-1]  # /api/file/list -> list
+    
+    if action == 'list':
+        path = data.get('path', '')
+        full_path = os.path.abspath(os.path.join(sandbox_root, path.lstrip('/')))
+        
+        # Security check - ensure within sandbox
+        if not full_path.startswith(sandbox_root):
+            handler._set_headers(403)
+            handler.wfile.write(b'{"error":"access_denied"}')
+            return
+        
+        try:
+            if os.path.isdir(full_path):
+                entries = []
+                for entry in os.listdir(full_path):
+                    entry_path = os.path.join(full_path, entry)
+                    stat = os.stat(entry_path)
+                    entries.append({
+                        'name': entry,
+                        'is_dir': os.path.isdir(entry_path),
+                        'size': stat.st_size,
+                        'modified': stat.st_mtime
+                    })
+                handler._set_headers(200)
+                handler.wfile.write(json.dumps({'ok': True, 'entries': entries}).encode())
+                audit_log('file_list', user, f'path: {path}')
+            else:
+                handler._set_headers(404)
+                handler.wfile.write(b'{"error":"directory_not_found"}')
+        except Exception as e:
+            handler._set_headers(500)
+            handler.wfile.write(json.dumps({'error': str(e)}).encode())
+    
+    elif action == 'read':
+        path = data.get('path', '')
+        full_path = os.path.abspath(os.path.join(sandbox_root, path.lstrip('/')))
+        
+        if not full_path.startswith(sandbox_root):
+            handler._set_headers(403)
+            handler.wfile.write(b'{"error":"access_denied"}')
+            return
+        
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            handler._set_headers(200)
+            handler.wfile.write(json.dumps({'ok': True, 'content': content}).encode())
+            audit_log('file_read', user, f'path: {path}')
+        except Exception as e:
+            handler._set_headers(500)
+            handler.wfile.write(json.dumps({'error': str(e)}).encode())
+    
+    elif action == 'write':
+        path = data.get('path', '')
+        content = data.get('content', '')
+        full_path = os.path.abspath(os.path.join(sandbox_root, path.lstrip('/')))
+        
+        if not full_path.startswith(sandbox_root):
+            handler._set_headers(403)
+            handler.wfile.write(b'{"error":"access_denied"}')
+            return
+        
+        # Check file size limit
+        max_size = int(yaml_scalar('file_manager.max_file_size', '10485760'))
+        if len(content.encode('utf-8')) > max_size:
+            handler._set_headers(413)
+            handler.wfile.write(b'{"error":"file_too_large"}')
+            return
+        
+        try:
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            handler._set_headers(200)
+            handler.wfile.write(b'{"ok":true}')
+            audit_log('file_write', user, f'path: {path}')
+        except Exception as e:
+            handler._set_headers(500)
+            handler.wfile.write(json.dumps({'error': str(e)}).encode())
+    
+    elif action == 'mkdir':
+        path = data.get('path', '')
+        full_path = os.path.abspath(os.path.join(sandbox_root, path.lstrip('/')))
+        
+        if not full_path.startswith(sandbox_root):
+            handler._set_headers(403)
+            handler.wfile.write(b'{"error":"access_denied"}')
+            return
+        
+        try:
+            os.makedirs(full_path, exist_ok=True)
+            handler._set_headers(200)
+            handler.wfile.write(b'{"ok":true}')
+            audit_log('file_mkdir', user, f'path: {path}')
+        except Exception as e:
+            handler._set_headers(500)
+            handler.wfile.write(json.dumps({'error': str(e)}).encode())
+    
+    elif action == 'delete':
+        path = data.get('path', '')
+        full_path = os.path.abspath(os.path.join(sandbox_root, path.lstrip('/')))
+        
+        if not full_path.startswith(sandbox_root):
+            handler._set_headers(403)
+            handler.wfile.write(b'{"error":"access_denied"}')
+            return
+        
+        try:
+            if os.path.isdir(full_path):
+                os.rmdir(full_path)
+            else:
+                os.remove(full_path)
+            handler._set_headers(200)
+            handler.wfile.write(b'{"ok":true}')
+            audit_log('file_delete', user, f'path: {path}')
+        except Exception as e:
+            handler._set_headers(500)
+            handler.wfile.write(json.dumps({'error': str(e)}).encode())
+    
+    else:
+        handler._set_headers(404)
+        handler.wfile.write(b'{"error":"unknown_action"}')
+
+def last_lines(path, n=100):
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END); size=f.tell(); block=1024; data=b''
+            while size>0 and n>0:
+                step=min(block,size); size-=step; f.seek(size); buf=f.read(step); data=buf+data; n-=buf.count(b'\\n')
+            return data.decode('utf-8','ignore').splitlines()[-100:]
+    except Exception:
+        return []
+
+def ai_reply(prompt):
+    prompt_low = (prompt or '').lower()
+    now=time.strftime('%Y-%m-%d %H:%M:%S')
+    status = {
+        'cpu': read_json(os.path.join(NS_LOGS,'cpu.json'),{}),
+        'mem': read_json(os.path.join(NS_LOGS,'memory.json'),{}),
+        'disk': read_json(os.path.join(NS_LOGS,'disk.json'),{}),
+        'net': read_json(os.path.join(NS_LOGS,'network.json'),{}),
+    }
+    if 'status' in prompt_low or 'health' in prompt_low:
+        return f"[{now}] CPU {status['cpu'].get('load1','?')} | Mem {status['mem'].get('used_pct','?')}% | Disk {status['disk'].get('use_pct','?')}% | Loss {status['net'].get('loss_pct','?')}%."
+    if 'backup' in prompt_low:
+        os.system(f'\\"{read_text(SELF_PATH_FILE).strip()}\\" --backup >/dev/null 2>&1 &')
+        return "Acknowledged. Snapshot backup started."
+    if 'version' in prompt_low or 'snapshot' in prompt_low:
+        os.system(f'\\"{read_text(SELF_PATH_FILE).strip()}\\" --version-snapshot >/dev/null 2>&1 &')
+        return "Version snapshot underway."
+    if 'restart monitor' in prompt_low:
+        os.system(f'\\"{read_text(SELF_PATH_FILE).strip()}\\" --restart-monitors >/dev/null 2>&1 &')
+        return "Restarting monitors."
+    if 'ip' in prompt_low:
+        return f"Internal IP {status['net'].get('ip','?')} | Public {status['net'].get('public_ip','?')}."
+    return f"I can do status, backup, version snapshot, and restart monitors. You said: {prompt}"
+
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+class Handler(SimpleHTTPRequestHandler):
+    def _set_headers(self, status=200, ctype='application/json', extra_headers=None):
+        self.send_response(status)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Cache-Control', 'no-store')
+        
+        # Security headers
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('X-XSS-Protection', '1; mode=block')
+        
+        if csrf_enabled():
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+        
+        if extra_headers:
+            for k,v in (extra_headers or {}).items(): 
+                self.send_header(k, v)
+        self.end_headers()
+
+    def do_GET(self):
+        # Rate limiting and IP filtering
+        client_ip = self.client_address[0]
+        if not check_rate_limit(client_ip):
+            self._set_headers(429)
+            self.wfile.write(b'{"error":"rate_limit_exceeded"}')
+            return
+        
+        parsed = urlparse(self.path)
+        
+        # WebSocket upgrade for terminal
+        if parsed.path == '/ws/term':
+            handle_terminal_websocket(self)
+            return
+        
+        if parsed.path == '/':
+            self._set_headers(200, 'text/html; charset=utf-8')
+            html = read_text(INDEX, '<h1>NovaShield</h1>')
+            self.wfile.write(html.encode('utf-8')); return
+        
+        if parsed.path.startswith('/static/'):
+            p = os.path.join(NS_WWW, parsed.path[len('/static/'):])
+            if not os.path.abspath(p).startswith(NS_WWW): 
+                self._set_headers(404); self.wfile.write(b'{}'); return
+            if os.path.exists(p) and os.path.isfile(p):
+                ctype='text/plain'
+                if p.endswith('.js'): ctype='application/javascript'
+                if p.endswith('.css'): ctype='text/css'
+                if p.endswith('.html'): ctype='text/html; charset=utf-8'
+                self._set_headers(200, ctype); self.wfile.write(read_text(p).encode('utf-8')); return
+            self._set_headers(404); self.wfile.write(b'{}'); return
+        
+        if parsed.path == '/api/status':
+            if not require_auth(self): return
+            data = {
+                'cpu': read_json(os.path.join(NS_LOGS,'cpu.json'),{}),
+                'memory': read_json(os.path.join(NS_LOGS,'memory.json'),{}),
+                'disk': read_json(os.path.join(NS_LOGS,'disk.json'),{}),
+                'network': read_json(os.path.join(NS_LOGS,'network.json'),{}),
+                'alerts': last_lines(os.path.join(NS_LOGS,'alerts.log'), 50),
+                'version': '3.1.0'
+            }
+            self._set_headers(200); self.wfile.write(json.dumps(data).encode('utf-8')); return
+        
+        if parsed.path == '/api/config':
+            if not require_auth(self): return
+            conf = read_text(CONFIG, 'version: "3.1.0"')
+            self._set_headers(200, 'text/plain'); self.wfile.write(conf.encode('utf-8')); return
+        
+        if parsed.path.startswith('/api/file/'):
+            handle_file_api(self, parsed, '')
+            return
+        
+        if parsed.path.startswith('/site/'):
+            p = parsed.path[len('/site/'):]
+            full = os.path.join(SITE_DIR, p)
+            if not os.path.abspath(full).startswith(SITE_DIR): 
+                self._set_headers(403); self.wfile.write(b'{}'); return
+            if os.path.exists(full):
+                self._set_headers(200, 'text/html; charset=utf-8'); self.wfile.write(read_text(full).encode('utf-8')); return
+            self._set_headers(404); self.wfile.write(b'{}'); return
+        
+        self._set_headers(404); self.wfile.write(b'{"error":"not found"}')
+
+    def do_POST(self):
+        # Rate limiting
+        client_ip = self.client_address[0]
+        if not check_rate_limit(client_ip):
+            self._set_headers(429)
+            self.wfile.write(b'{"error":"rate_limit_exceeded"}')
+            return
+        
+        parsed = urlparse(self.path)
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else ''
+        
+        if parsed.path == '/api/login':
+            try: 
+                data = json.loads(body or '{}')
+                user = data.get('user')
+                pwd = data.get('pass')
+                totp_code = data.get('totp', '')
+            except Exception: 
+                data = {}
+                user = ''
+                pwd = ''
+                totp_code = ''
+            
+            if auth_enabled() and check_login(user, pwd):
+                # Check TOTP if enabled
+                if totp_enabled() and get_totp_secret(user):
+                    if not totp_code or not verify_totp(user, totp_code):
+                        self._set_headers(401)
+                        self.wfile.write(b'{"ok":false,"totp_required":true}')
+                        audit_log('login_failed_totp', user, 'TOTP verification failed')
+                        return
+                
+                tok = new_session(user)
+                self._set_headers(200, 'application/json', {'Set-Cookie': f'NSSESS={tok}; Path=/; HttpOnly'})
+                self.wfile.write(b'{"ok":true}')
+                audit_log('login_success', user, 'successful authentication')
+                return
+            
+            self._set_headers(401)
+            self.wfile.write(b'{"ok":false}')
+            audit_log('login_failed', user or 'unknown', 'invalid credentials')
+            return
+        
+        if parsed.path == '/api/control':
+            if not require_auth(self): return
+            try: data = json.loads(body or '{}')
+            except Exception: data={}
+            
+            if not require_csrf(self, data): return
+            
+            session = get_session(self)
+            user = session.get('user', 'anonymous') if session else 'anonymous'
+            
+            action = data.get('action','')
+            target = data.get('target','')
+            flag = os.path.join(NS_CTRL, f'{target}.disabled')
+            
+            if action == 'enable' and target:
+                try: 
+                    if os.path.exists(flag): os.remove(flag)
+                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8'))
+                    audit_log('control_enable', user, f'target: {target}')
+                    return
+                except Exception: pass
+            
+            if action == 'disable' and target:
+                try: 
+                    Path(flag).touch()
+                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8'))
+                    audit_log('control_disable', user, f'target: {target}')
+                    return
+                except Exception: pass
+            
+            self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
+        
+        if parsed.path.startswith('/api/file/'):
+            handle_file_api(self, parsed, body)
+            return
+        
+        if parsed.path == '/api/ai':
+            if not require_auth(self): return
+            try: data = json.loads(body or '{}')
+            except Exception: data={}
+            
+            if not require_csrf(self, data): return
+            
+            session = get_session(self)
+            user = session.get('user', 'anonymous') if session else 'anonymous'
+            
+            prompt = data.get('prompt','')
+            reply = ai_reply(prompt)
+            try: 
+                open(CHATLOG,'a',encoding='utf-8').write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} Q:{prompt} A:{reply}\\n')
+            except Exception: pass
+            self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'reply':reply}).encode('utf-8'))
+            audit_log('ai_query', user, f'prompt: {prompt[:50]}...')
+            return
+        
+        if parsed.path == '/api/webgen':
+            if not require_auth(self): return
+            try: data = json.loads(body or '{}')
+            except Exception: data={}
+            
+            if not require_csrf(self, data): return
+            
+            session = get_session(self)
+            user = session.get('user', 'anonymous') if session else 'anonymous'
+            
+            title = data.get('title','Untitled')
+            content = data.get('content','')
+            slug = ''.join([c.lower() if c.isalnum() else '-' for c in title]).strip('-') or f'page-{int(time.time())}'
+            Path(SITE_DIR).mkdir(parents=True, exist_ok=True)
+            
+            html = f'''<!DOCTYPE html>
+<html><head><title>{title}</title><style>body{{font-family:Arial,sans-serif;margin:40px;}}</style></head>
+<body><h1>{title}</h1><div>{content}</div></body></html>'''
+            
+            write_text(os.path.join(SITE_DIR, f'{slug}.html'), html)
+            self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'url':f'/site/{slug}.html'}).encode('utf-8'))
+            audit_log('webgen_create', user, f'title: {title}')
+            return
+        
+        self._set_headers(400); self.wfile.write(b'{"ok":false}')
+
+def pick_host_port():
+    host = '127.0.0.1'; port = 8765
+    try:
+        h = None; p = None
+        for line in open(CONFIG,'r',encoding='utf-8'):
+            s=line.split('#',1)[0].strip()
+            if not s: continue
+            if s.startswith('web.host:') or (s.startswith('host:') and 'http:' not in s):
+                h = s.split(':',1)[1].strip().strip('"').strip("'")
+            if s.startswith('web.port:') or (s.startswith('port:') and 'http:' not in s):
+                try: p = int(s.split(':',1)[1].strip())
+                except: pass
+            if s.startswith('web.allow_lan:') or (s.startswith('allow_lan:') and 'true' in s):
+                h = '0.0.0.0'
+        if h: host = h
+        if p: port = p
+    except Exception:
+        pass
+    try:
+        socket.getaddrinfo(host, port)
+    except Exception:
+        host = '127.0.0.1'
+    return host, port
+
+def create_ssl_context():
+    if not tls_enabled():
+        return None
+    
+    cert_file = os.path.join(NS_HOME, yaml_scalar('security.cert_file', 'keys/certs/server.crt'))
+    key_file = os.path.join(NS_HOME, yaml_scalar('security.key_file', 'keys/certs/server.key'))
+    
+    if not os.path.exists(cert_file) or not os.path.exists(key_file):
+        return None
+    
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert_file, key_file)
+        return context
+    except:
+        return None
+
+if __name__ == '__main__':
+    host, port = pick_host_port()
+    os.chdir(NS_WWW)
+    
+    ssl_context = create_ssl_context()
+    protocol = 'https' if ssl_context else 'http'
+    
+    for h in (host, '127.0.0.1', '0.0.0.0'):
+        try:
+            httpd = ThreadingHTTPServer((h, port), Handler)
+            if ssl_context:
+                httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
+            print(f"NovaShield Web Server on {protocol}://{h}:{port}")
+            httpd.serve_forever()
+        except Exception as e:
+            print(f"Bind failed on {h}:{port}: {e}", file=sys.stderr)
+            time.sleep(0.5)
+            continue
+PY
+  chmod 700 "${NS_WWW}/server.py"
+}
 
 def yaml_scalar(key):
     try:
