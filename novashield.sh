@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.1.0 — JARVIS Edition — All‑in‑One Installer & Runtime
+# NovaShield Terminal 3.1.0 â€” JARVIS Edition â€” Allâ€‘inâ€‘One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
@@ -30,9 +30,12 @@ NS_VERSION_FILE="${NS_HOME}/version.txt"
 NS_SELF_PATH_FILE="${NS_BIN}/self_path"
 NS_LAUNCHER_BACKUPS="${NS_BIN}/backups"
 NS_ALERTS="${NS_LOGS}/alerts.log"
+NS_AUDIT="${NS_LOGS}/audit.log"
 NS_CHATLOG="${NS_LOGS}/chat.log"
 NS_SCHED_STATE="${NS_CTRL}/scheduler.state"
 NS_SESS_DB="${NS_CTRL}/sessions.json"
+NS_RL_DB="${NS_CTRL}/ratelimit.json"
+NS_BANS_DB="${NS_CTRL}/bans.json"
 
 NS_DEFAULT_PORT=8765
 NS_DEFAULT_HOST="127.0.0.1"
@@ -50,17 +53,9 @@ ns_now() { date '+%Y-%m-%d %H:%M:%S'; }
 ns_log() { echo -e "$(ns_now) [INFO ] $*" | tee -a "${NS_HOME}/launcher.log" >&2; }
 ns_warn(){ echo -e "${YELLOW}$(ns_now) [WARN ] $*${NC}" | tee -a "${NS_HOME}/launcher.log" >&2; }
 ns_err() { echo -e "${RED}$(ns_now) [ERROR] $*${NC}" | tee -a "${NS_HOME}/launcher.log" >&2; }
-ns_ok()  { echo -e "${GREEN}✔ $*${NC}"; }
+ns_ok()  { echo -e "${GREEN}âœ” $*${NC}"; }
 
-audit_log() {
-  local action="$1" user="${2:-unknown}" ip="${3:-unknown}" details="${4:-}"
-  local enabled; enabled=$(awk -F': ' '/audit:/,/^[^ ]/ { if($1 ~ /enabled/) print $2 }' "$NS_CONF" 2>/dev/null | tr -d ' ' | head -1)
-  if [ "$enabled" = "true" ]; then
-    local log_file; log_file=$(awk -F': ' '/audit:/,/^[^ ]/ { if($1 ~ /log_file/) print $2 }' "$NS_CONF" 2>/dev/null | tr -d '"' | tr -d ' ' | head -1)
-    [ -z "$log_file" ] && log_file="logs/audit.log"
-    echo "$(ns_now) [AUDIT] action=$action user=$user ip=$ip details=$details" >> "${NS_HOME}/${log_file}"
-  fi
-}
+audit(){ echo "$(ns_now) $*" | tee -a "$NS_AUDIT" >/dev/null; }
 
 alert(){
   local level="$1"; shift
@@ -105,7 +100,10 @@ ensure_dirs(){
            "$NS_LAUNCHER_BACKUPS" "${NS_HOME}/backups" "${NS_HOME}/site"
   : >"$NS_ALERTS" || true
   : >"$NS_CHATLOG" || true
+  : >"$NS_AUDIT" || true
   [ -f "$NS_SESS_DB" ] || echo '{}' >"$NS_SESS_DB"
+  [ -f "$NS_RL_DB" ] || echo '{}' >"$NS_RL_DB"
+  [ -f "$NS_BANS_DB" ] || echo '{}' >"$NS_BANS_DB"
   echo "$NS_VERSION" >"$NS_VERSION_FILE"
   echo "$NS_SELF" >"$NS_SELF_PATH_FILE"
 }
@@ -122,25 +120,32 @@ http:
 
 security:
   auth_enabled: true
-  users: []
+  require_2fa: false
+  users: []        # add via CLI: ./novashield.sh --add-user
   auth_salt: "change-this-salt"
   rate_limit_per_min: 60
-  lockout_threshold: 5
-  lockout_duration_min: 15
+  lockout_threshold: 10
+  ip_allowlist: [] # e.g. ["127.0.0.1"]
+  ip_denylist: []  # e.g. ["0.0.0.0/0"]
+  csrf_required: true
   tls_enabled: false
-  tls_cert_file: "keys/server.crt"
-  tls_key_file: "keys/server.key"
-  csrf_protection: true
-  secure_headers: true
-  ip_allow_list: []
-  ip_deny_list: []
-  totp_enabled: false
+  tls_cert: "keys/tls.crt"
+  tls_key: "keys/tls.key"
+
+terminal:
+  enabled: true
+  shell: ""             # auto-detect
+  idle_timeout_sec: 900 # 15 minutes
+  cols: 120
+  rows: 32
+  allow_write: true
+  # Optional allowlist; if non-empty, warn on commands not matching any
+  command_allowlist: []
 
 monitors:
   cpu:         { enabled: true,  interval_sec: 3, warn_load: 2.00, crit_load: 4.00 }
-  memory:      { enabled: true,  interval_sec: 3, warn_pct: 80,  crit_pct: 92 }
-  # On Termux, "/" can read 100% because it's a tiny system mount.
-  # We will automatically switch to ~/.novashield at runtime if mount is "/".
+  memory:      { enabled: true,  interval_sec: 3, warn_pct: 85,  crit_pct: 93 }
+  # On Termux, "/" is tiny; we auto-switch to ~/.novashield runtime path if mount is "/".
   disk:        { enabled: true,  interval_sec: 10, warn_pct: 85, crit_pct: 95, mount: "/" }
   network:     { enabled: true,  interval_sec: 5, iface: "", ping_host: "1.1.1.1", loss_warn: 20 }
   integrity:   { enabled: true,  interval_sec: 60, watch_paths: ["/system/bin","/system/xbin","/usr/bin"] }
@@ -153,20 +158,8 @@ monitors:
 logging:
   keep_days: 14
   alerts_enabled: true
-  alert_sink: ["terminal", "web", "notify"]
+  alert_sink: ["notify"]     # terminal/web logs always recorded; notify -> email/telegram/discord
   notify_levels: ["CRIT","WARN","ERROR"]
-
-audit:
-  enabled: true
-  log_file: "logs/audit.log"
-  actions: ["login", "logout", "control", "terminal", "file_ops", "webgen", "backup"]
-
-terminal:
-  enabled: true
-  idle_timeout_min: 30
-  max_sessions: 5
-  shell_command: ""
-  audit_commands: true
 
 backup:
   enabled: true
@@ -261,23 +254,21 @@ generate_keys(){
     head -c 64 /dev/urandom >"${NS_HOME}/${aesf}"
     chmod 600 "${NS_HOME}/${aesf}"
   fi
-  
-  # Generate TLS certificates if TLS is enabled and files don't exist
-  local tls_enabled; tls_enabled=$(awk -F': ' '/tls_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | grep -i true || echo "false")
-  if [ "$tls_enabled" = "true" ]; then
-    local cert_file key_file
-    cert_file=$(awk -F': ' '/tls_cert_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' || echo "keys/server.crt")
-    key_file=$(awk -F': ' '/tls_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' || echo "keys/server.key")
-    
-    if [ ! -f "${NS_HOME}/${cert_file}" ] || [ ! -f "${NS_HOME}/${key_file}" ]; then
-      ns_log "Generating self-signed TLS certificate"
-      (cd "$NS_KEYS" && \
-        openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt -days 365 -nodes \
-        -subj "/C=US/ST=State/L=City/O=NovaShield/CN=localhost" 2>/dev/null)
-      chmod 600 "${NS_KEYS}/server.key"
-      chmod 644 "${NS_KEYS}/server.crt"
-    fi
-  fi
+}
+
+generate_self_signed_tls(){
+  local enabled; enabled=$(awk -F': ' '/tls_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ')
+  [ "$enabled" = "true" ] || return 0
+  local crt key
+  crt=$(awk -F': ' '/tls_cert:/ {print $2}' "$NS_CONF" | tr -d '" ')
+  key=$(awk -F': ' '/tls_key:/ {print $2}' "$NS_CONF" | tr -d '" ')
+  [ -z "$crt" ] && crt="keys/tls.crt"
+  [ -z "$key" ] && key="keys/tls.key"
+  [ -f "${NS_HOME}/${crt}" ] && [ -f "${NS_HOME}/${key}" ] && return 0
+  ns_log "Generating self-signed TLS cert"
+  (cd "$NS_HOME/keys" && \
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt -days 825 \
+      -subj "/CN=localhost/O=NovaShield/OU=SelfSigned") || ns_warn "TLS cert generation failed"
 }
 
 aes_key_path(){ awk -F': ' '/aes_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' ; }
@@ -289,7 +280,7 @@ dec_dir(){ local in="$1"; local outdir="$2"; local tmp="${NS_TMP}/tmp-$(date +%s
 write_notify_py(){
   write_file "${NS_BIN}/notify.py" 700 <<'PY'
 #!/usr/bin/env python3
-import os, sys, json, smtplib, ssl, urllib.request, urllib.parse
+import os, sys, json, smtplib, ssl, urllib.request, urllib.parse, hmac, hashlib, base64, time
 from email.mime_text import MIMEText as _MT
 try:
   from email.mime.text import MIMEText
@@ -429,9 +420,9 @@ backup_snapshot(){
   fi
 
   ns_ok "Backup created: $final"
+  audit "BACKUP CREATED $final"
   rotate_backups
 }
-
 
 rotate_backups(){
   local max_keep; max_keep=$(awk -F': ' '/max_keep:/ {print $2}' "$NS_CONF" | tr -d ' ' || echo 10)
@@ -449,12 +440,12 @@ version_snapshot(){
   cp -a "$NS_CONF" "$vdir/config.yaml" 2>/dev/null || true
   cp -a "$NS_HOME/launcher.log" "$vdir/launcher.log" 2>/dev/null || true
   cp -a "$NS_ALERTS" "$vdir/alerts.log" 2>/dev/null || true
+  audit "VERSION SNAPSHOT ${vdir}"
 }
 
 monitor_enabled(){ local name="$1"; [ -f "${NS_CTRL}/${name}.disabled" ] && return 1 || return 0; }
 write_json(){ local path="$1"; shift; printf '%s' "$*" >"$path"; }
 
-# Helper: get internal IP on Termux without netlink; fallback to ifconfig/ip.
 ns_internal_ip(){
   local iface="$1" ip=""
   if [ "$IS_TERMUX" -eq 1 ] && command -v getprop >/dev/null 2>&1; then
@@ -475,6 +466,7 @@ ns_internal_ip(){
   echo "$ip"
 }
 
+# ------------------------------- MONITORS ------------------------------------
 _monitor_cpu(){
   set +e; set +o pipefail
   local interval warn crit
@@ -485,8 +477,7 @@ _monitor_cpu(){
   while true; do
     monitor_enabled cpu || { sleep "$interval"; continue; }
     local load1; load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
-    local lvl
-    lvl=$(awk -v l="$load1" -v w="$warn" -v c="$crit" 'BEGIN{ if(l>=c){print "CRIT"} else if(l>=w){print "WARN"} else {print "OK"} }')
+    local lvl; lvl=$(awk -v l="$load1" -v w="$warn" -v c="$crit" 'BEGIN{ if(l>=c){print "CRIT"} else if(l>=w){print "WARN"} else {print "OK"} }')
     write_json "${NS_LOGS}/cpu.json" "{\"ts\":\"$(ns_now)\",\"load1\":$load1,\"warn\":$warn,\"crit\":$crit,\"level\":\"$lvl\"}"
     [ "$lvl" = "CRIT" ] && alert CRIT "CPU load high: $load1" || { [ "$lvl" = "WARN" ] && alert WARN "CPU load elevated: $load1"; }
     sleep "$interval"
@@ -497,8 +488,8 @@ _monitor_mem(){
   set +e; set +o pipefail
   local interval warn crit
   interval=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 3)
-  warn=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' '); warn=$(ensure_int "${warn:-}" 80)
-  crit=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' '); crit=$(ensure_int "${crit:-}" 92)
+  warn=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' '); warn=$(ensure_int "${warn:-}" 85)
+  crit=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' '); crit=$(ensure_int "${crit:-}" 93)
   while true; do
     monitor_enabled memory || { sleep "$interval"; continue; }
     local mem_total mem_avail mem_used pct
@@ -791,10 +782,11 @@ stop_monitors(){
   [ "$any" -eq 1 ] && ns_ok "Monitors stopped" || true
 }
 
+# ------------------------------ PY WEB SERVER --------------------------------
 write_server_py(){
   write_file "${NS_WWW}/server.py" 700 <<'PY'
 #!/usr/bin/env python3
-import json, os, sys, time, hashlib, http.cookies, socket
+import json, os, sys, time, hashlib, http.cookies, socket, base64, threading, select, pty, tty, fcntl, struct, hmac
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
@@ -809,7 +801,12 @@ INDEX = os.path.join(NS_WWW, 'index.html')
 CONFIG = os.path.join(NS_HOME, 'config.yaml')
 SESSIONS = os.path.join(NS_CTRL, 'sessions.json')
 CHATLOG = os.path.join(NS_LOGS, 'chat.log')
+AUDIT = os.path.join(NS_LOGS, 'audit.log')
 SITE_DIR = os.path.join(NS_HOME, 'site')
+RL_DB = os.path.join(NS_CTRL,'ratelimit.json')
+BANS_DB = os.path.join(NS_CTRL,'bans.json')
+
+GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'  # WebSocket
 
 def read_text(path, default=''):
     try: return open(path,'r',encoding='utf-8').read()
@@ -827,7 +824,7 @@ def write_json(path, obj):
     Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
     with open(path,'w',encoding='utf-8') as f: f.write(json.dumps(obj))
 
-def yaml_scalar(key):
+def yaml_val(key, default=None):
     try:
         for line in open(CONFIG,'r',encoding='utf-8'):
             s=line.split('#',1)[0].strip()
@@ -835,66 +832,171 @@ def yaml_scalar(key):
             if s.startswith(key+':'):
                 return s.split(':',1)[1].strip().strip('"').strip("'")
     except Exception:
-        return None
-    return None
+        return default
+    return default
 
-def yaml_flag(path, default=False):
-    v = None
+def yaml_flag(key, default=False):
+    v = yaml_val(key, '').lower()
+    return True if v=='true' else (False if v=='false' else default)
+
+def auth_enabled(): return yaml_flag('security.auth_enabled', True)
+def csrf_required(): return yaml_flag('security.csrf_required', True)
+def require_2fa(): return yaml_flag('security.require_2fa', False)
+def rate_limit_per_min(): 
+    v=yaml_val('rate_limit_per_min'); 
+    try: return int(v)
+    except: return 60
+def lockout_threshold():
+    v=yaml_val('lockout_threshold')
+    try: return int(v)
+    except: return 10
+
+def ip_lists():
+    allow = []
+    deny = []
     try:
+        allow_block=False; deny_block=False
         for line in open(CONFIG,'r',encoding='utf-8'):
             s=line.split('#',1)[0].strip()
-            if s.startswith(path+':'):
-                v = s.split(':',1)[1].strip().lower()
-                break
-    except Exception:
-        return default
-    return (v=='true')
+            if s.startswith('ip_allowlist:'): allow_block=True; deny_block=False; continue
+            if s.startswith('ip_denylist:'): deny_block=True; allow_block=False; continue
+            if allow_block:
+                if s.startswith('- '): allow.append(s[2:].strip().strip('"'))
+                elif s and not s.startswith('- '): allow_block=False
+            if deny_block:
+                if s.startswith('- '): deny.append(s[2:].strip().strip('"'))
+                elif s and not s.startswith('- '): deny_block=False
+    except Exception: pass
+    return allow, deny
 
-def auth_enabled():
-    return yaml_flag('security.auth_enabled', False)
+def audit(msg):
+    try:
+        with open(AUDIT,'a',encoding='utf-8') as f: f.write(time.strftime('%Y-%m-%d %H:%M:%S')+' '+msg+'\n')
+    except Exception: pass
 
-def auth_salt():
-    v = yaml_scalar('auth_salt') or 'changeme'
-    return v
+def users_db():
+    return read_json(SESSIONS, {}) or {}
+
+def set_users_db(j):
+    write_json(SESSIONS, j)
 
 def users_list():
-    db = read_json(SESSIONS, {}) or {}
+    db = users_db()
     return db.get('_userdb', {})
 
+def user_2fa_secret(user):
+    return (users_db().get('_2fa', {}) or {}).get(user)
+
 def set_user(username, pass_sha):
-    db = read_json(SESSIONS, {}) or {}
+    db = users_db()
     ud = db.get('_userdb', {})
     ud[username]=pass_sha
     db['_userdb']=ud
-    write_json(SESSIONS, db)
+    set_users_db(db)
+
+def set_2fa(username, secret_b32):
+    db = users_db()
+    tow = db.get('_2fa', {})
+    tow[username]=secret_b32
+    db['_2fa']=tow
+    set_users_db(db)
 
 def check_login(username, password):
-    salt = auth_salt()
+    salt = yaml_val('auth_salt','changeme')
     sha = hashlib.sha256((salt+':'+password).encode()).hexdigest()
     return users_list().get(username,'')==sha
 
+def totp_now(secret_b32, t=None):
+    # RFC 6238 TOTP 30s window, 6 digits, SHA1
+    if not secret_b32: return None
+    try:
+        key = base64.b32decode(secret_b32.upper())
+    except Exception:
+        return None
+    if t is None: t = int(time.time())
+    steps = int(t/30)
+    msg = steps.to_bytes(8,'big')
+    h = hmac.new(key, msg, hashlib.sha1).digest()
+    o = h[19] & 0x0f
+    code = (int.from_bytes(h[o:o+4],'big') & 0x7fffffff) % 1000000
+    return f'{code:06d}'
+
 def new_session(username):
-    token = hashlib.sha256(f'{username}:{time.time()}'.encode()).hexdigest()
-    db = read_json(SESSIONS, {}) or {}
-    db[token]={'user':username,'ts':int(time.time())}
-    write_json(SESSIONS, db)
-    return token
+    token = hashlib.sha256(f'{username}:{time.time()}:{os.urandom(8)}'.encode()).hexdigest()
+    csrf  = hashlib.sha256(f'csrf:{token}:{os.urandom(8)}'.encode()).hexdigest()
+    db = users_db()
+    db[token]={'user':username,'ts':int(time.time()),'csrf':csrf}
+    set_users_db(db)
+    return token, csrf
 
 def get_session(handler):
-    if not auth_enabled(): return {'user':'public'}
+    if not auth_enabled(): return {'user':'public','csrf':'public'}
     if 'Cookie' not in handler.headers: return None
     C = http.cookies.SimpleCookie()
     C.load(handler.headers['Cookie'])
     if 'NSSESS' not in C: return None
     token = C['NSSESS'].value
-    db = read_json(SESSIONS, {}) or {}
+    db = users_db()
     return db.get(token)
 
 def require_auth(handler):
+    # IP allow/deny
+    client_ip = handler.client_address[0]
+    allow, deny = ip_lists()
+    if deny and (client_ip in deny or ('0.0.0.0/0' in deny)):
+        handler._set_headers(403); handler.wfile.write(b'{"error":"forbidden"}'); return False
+    if allow and client_ip not in allow:
+        handler._set_headers(403); handler.wfile.write(b'{"error":"forbidden"}'); return False
     if not auth_enabled(): return True
     sess = get_session(handler)
-    if sess: return True
-    handler._set_headers(401); handler.wfile.write(b'{"error":"unauthorized"}'); return False
+    if not sess:
+        handler._set_headers(401); handler.wfile.write(b'{"error":"unauthorized"}'); return False
+    if csrf_required() and handler.command=='POST':
+        client_csrf = handler.headers.get('X-CSRF','')
+        if client_csrf != sess.get('csrf',''):
+            handler._set_headers(403); handler.wfile.write(b'{"error":"csrf"}'); return False
+    return True
+
+def rate_limit_ok(handler, key='default'):
+    ip = handler.client_address[0]
+    now = int(time.time())
+    rl = read_json(RL_DB,{}) or {}
+    per = rate_limit_per_min()
+    win = now // 60
+    ent = rl.get(ip, {'win':win,'cnt':0,'lock':0})
+    if ent.get('lock',0) and ent['lock']>now:
+        return False
+    if ent.get('win')!=win:
+        ent={'win':win,'cnt':0,'lock':0}
+    ent['cnt']=ent.get('cnt',0)+1
+    if ent['cnt']>per:
+        ent['lock']=now+min(900, int((ent['cnt']-per)*2))  # exponential-ish backoff
+    rl[ip]=ent
+    write_json(RL_DB, rl)
+    return ent['cnt']<=per
+
+def login_fail(handler):
+    ip=handler.client_address[0]
+    rl = read_json(BANS_DB,{}) or {}
+    now=int(time.time())
+    ent = rl.get(ip, {'fails':0,'lock':0})
+    ent['fails']=ent.get('fails',0)+1
+    if ent['fails']>=lockout_threshold():
+        ent['lock']=now+900
+    rl[ip]=ent
+    write_json(BANS_DB, rl)
+
+def login_ok(handler):
+    ip=handler.client_address[0]
+    rl = read_json(BANS_DB,{}) or {}
+    if ip in rl: rl.pop(ip,None); write_json(BANS_DB, rl)
+
+def banned(handler):
+    ip=handler.client_address[0]
+    rl = read_json(BANS_DB,{}) or {}
+    now=int(time.time())
+    ent=rl.get(ip)
+    return bool(ent and ent.get('lock',0)>now)
 
 def last_lines(path, n=100):
     try:
@@ -902,7 +1004,7 @@ def last_lines(path, n=100):
             f.seek(0, os.SEEK_END); size=f.tell(); block=1024; data=b''
             while size>0 and n>0:
                 step=min(block,size); size-=step; f.seek(size); buf=f.read(step); data=buf+data; n-=buf.count(b'\n')
-            return data.decode('utf-8','ignore').splitlines()[-100:]
+            return data.decode('utf-8','ignore').splitlines()[-n:]
     except Exception:
         return []
 
@@ -930,21 +1032,172 @@ def ai_reply(prompt):
         return f"Internal IP {status['net'].get('ip','?')} | Public {status['net'].get('public_ip','?')}."
     return f"I can do status, backup, version snapshot, and restart monitors. You said: {prompt}"
 
+# ------------------------------- WebSocket PTY -------------------------------
+def ws_handshake(handler):
+    key = handler.headers.get('Sec-WebSocket-Key')
+    if not key: return False
+    accept = base64.b64encode(hashlib.sha1((key+GUID).encode()).digest()).decode()
+    headers = {
+        'Upgrade': 'websocket',
+        'Connection': 'Upgrade',
+        'Sec-WebSocket-Accept': accept,
+        'Sec-WebSocket-Protocol': 'chat'
+    }
+    handler._set_headers(101, 'application/octet-stream', headers)
+    return True
+
+def ws_recv(sock):
+    # minimal WS frame parser (text/binary)
+    hdr = sock.recv(2)
+    if not hdr: return None, None
+    fin = hdr[0] & 0x80
+    opcode = hdr[0] & 0x0f
+    masked = hdr[1] & 0x80
+    length = hdr[1] & 0x7f
+    if length==126:
+        ext = sock.recv(2); length = int.from_bytes(ext,'big')
+    elif length==127:
+        ext = sock.recv(8); length = int.from_bytes(ext,'big')
+    mask = sock.recv(4) if masked else b'\x00\x00\x00\x00'
+    data = b''
+    while len(data)<length:
+        chunk = sock.recv(length-len(data))
+        if not chunk: break
+        data += chunk
+    if masked:
+        data = bytes(b ^ mask[i%4] for i,b in enumerate(data))
+    return opcode, data
+
+def ws_send(sock, data, opcode=1):
+    # opcode 1=text, 2=binary
+    if isinstance(data,str): data = data.encode()
+    length = len(data)
+    hdr = bytearray()
+    hdr.append(0x80 | (opcode & 0x0f))
+    if length<126:
+        hdr.append(length)
+    elif length<65536:
+        hdr.append(126); hdr += length.to_bytes(2,'big')
+    else:
+        hdr.append(127); hdr += length.to_bytes(8,'big')
+    sock.send(bytes(hdr)+data)
+
+def spawn_pty(shell=None, cols=120, rows=32):
+    pid, fd = pty.fork()
+    if pid==0:
+        # child
+        try:
+            if shell is None or not shell:
+                shell = os.environ.get('SHELL','')
+            if not shell:
+                # Termux default; fallback to sh
+                for cand in ('/data/data/com.termux/files/usr/bin/bash','/bin/bash','/system/bin/sh','/bin/sh'):
+                    if os.path.exists(cand): shell=cand; break
+            os.execv(shell, [shell, '-l'])
+        except Exception as e:
+            os.write(1, f'Failed to start shell: {e}\n'.encode())
+            os._exit(1)
+    # set window size
+    winsz = struct.pack("HHHH", rows, cols, 0, 0)
+    fcntl.ioctl(fd, tty.TIOCSWINSZ, winsz)
+    return pid, fd
+
+def mirror_terminal(handler):
+    if not require_auth(handler): return
+    if not ws_handshake(handler): return
+    sess = get_session(handler)
+    user = sess.get('user','?') if sess else '?'
+    client = handler.connection
+    # terminal options
+    cols = int(yaml_val('cols') or yaml_val('terminal.cols') or 120)
+    rows = int(yaml_val('rows') or yaml_val('terminal.rows') or 32)
+    shell = yaml_val('terminal.shell','') or None
+    idle_timeout = int(yaml_val('terminal.idle_timeout_sec') or 900)
+    allow_write = (yaml_val('terminal.allow_write','true')=='true')
+    pid, fd = spawn_pty(shell, cols, rows)
+    audit(f'TERM START user={user} pid={pid} ip={handler.client_address[0]}')
+    last_activity = time.time()
+
+    def reader():
+        try:
+            while True:
+                r,_,_ = select.select([fd],[],[], 1.0)
+                if fd in r:
+                    try:
+                        data = os.read(fd, 4096)
+                    except OSError:
+                        break
+                    if not data: break
+                    try:
+                        ws_send(client, data, opcode=2)
+                    except Exception:
+                        break
+        finally:
+            try: os.close(fd)
+            except: pass
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+
+    try:
+        while True:
+            if time.time()-last_activity>idle_timeout:
+                ws_send(client, '\r\n[Session idle timeout]\r\n'); break
+            opcode, data = ws_recv(client)
+            if opcode is None: break
+            last_activity = time.time()
+            if opcode==8: break  # close
+            if opcode in (1,2):
+                if not allow_write:
+                    continue
+                try:
+                    os.write(fd, data)
+                except Exception:
+                    break
+    except Exception:
+        pass
+    finally:
+        try:
+            ws_send(client, '\r\n[Session ended]\r\n')
+        except Exception: pass
+        try: os.kill(pid, 15)
+        except Exception: pass
+        audit(f'TERM END user={user} pid={pid} ip={handler.client_address[0]}')
+
+# ------------------------------- HTTP Handler -------------------------------
 class Handler(SimpleHTTPRequestHandler):
     def _set_headers(self, status=200, ctype='application/json', extra_headers=None):
         self.send_response(status)
         self.send_header('Content-Type', ctype)
         self.send_header('Cache-Control', 'no-store')
+        # Security headers
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Permissions-Policy', 'geolocation=(), microphone=()')
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self';")
         if extra_headers:
             for k,v in (extra_headers or {}).items(): self.send_header(k, v)
         self.end_headers()
 
+    def log_message(self, fmt, *args):
+        # quiet default noisy logs; audits handled separately
+        return
+
     def do_GET(self):
         parsed = urlparse(self.path)
+
+        # WebSocket terminal
+        if parsed.path == '/ws/term':
+            if not require_auth(self): return
+            mirror_terminal(self)
+            return
+
         if parsed.path == '/':
             self._set_headers(200, 'text/html; charset=utf-8')
             html = read_text(INDEX, '<h1>NovaShield</h1>')
             self.wfile.write(html.encode('utf-8')); return
+
         if parsed.path.startswith('/static/'):
             p = os.path.join(NS_WWW, parsed.path[len('/static/'):])
             if not os.path.abspath(p).startswith(NS_WWW): self._set_headers(404); self.wfile.write(b'{}'); return
@@ -955,8 +1208,10 @@ class Handler(SimpleHTTPRequestHandler):
                 if p.endswith('.html'): ctype='text/html; charset=utf-8'
                 self._set_headers(200, ctype); self.wfile.write(read_text(p).encode('utf-8')); return
             self._set_headers(404); self.wfile.write(b'{}'); return
+
         if parsed.path == '/api/status':
             if not require_auth(self): return
+            sess = get_session(self) or {}
             data = {
                 'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
                 'cpu':   read_json(os.path.join(NS_LOGS, 'cpu.json'), {}),
@@ -968,15 +1223,18 @@ class Handler(SimpleHTTPRequestHandler):
                 'user': read_json(os.path.join(NS_LOGS,'user.json'),{}),
                 'services': read_json(os.path.join(NS_LOGS,'service.json'),{}),
                 'logwatch': read_json(os.path.join(NS_LOGS,'logwatch.json'),{}),
-                'alerts': (lambda p: (open(p,'r',encoding='utf-8').read().splitlines()[-100:]) if os.path.exists(p) else [])(os.path.join(NS_LOGS,'alerts.log')),
-                'projects_count': len([x for x in os.listdir(os.path.join(NS_HOME, 'projects')) if not x.startswith('.')]) if os.path.exists(os.path.join(NS_HOME, 'projects')) else 0,
-                'modules_count': len([x for x in os.listdir(os.path.join(NS_HOME, 'modules')) if not x.startswith('.')]) if os.path.exists(os.path.join(NS_HOME, 'modules')) else 0,
-                'version': read_text(os.path.join(NS_HOME, 'version.txt'), 'unknown'),
+                'alerts': last_lines(os.path.join(NS_LOGS,'alerts.log'), 200),
+                'projects_count': len([x for x in os.listdir(os.path.join(NS_HOME,'projects')) if not x.startswith('.')]) if os.path.exists(os.path.join(NS_HOME,'projects')) else 0,
+                'modules_count': len([x for x in os.listdir(os.path.join(NS_HOME,'modules')) if not x.startswith('.')]) if os.path.exists(os.path.join(NS_HOME,'modules')) else 0,
+                'version': read_text(os.path.join(NS_HOME,'version.txt'),'unknown'),
+                'csrf': sess.get('csrf','') if auth_enabled() else 'public'
             }
             self._set_headers(200); self.wfile.write(json.dumps(data).encode('utf-8')); return
+
         if parsed.path == '/api/config':
             if not require_auth(self): return
             self._set_headers(200, 'text/plain; charset=utf-8'); self.wfile.write(read_text(CONFIG, '').encode('utf-8')); return
+
         if parsed.path == '/api/logs':
             if not require_auth(self): return
             q = parse_qs(parsed.query); name = (q.get('name', ['launcher.log'])[0]).replace('..','')
@@ -987,6 +1245,7 @@ class Handler(SimpleHTTPRequestHandler):
                 with open(p,'r',encoding='utf-8') as f: lines=f.read().splitlines()[-200:]
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'name': name, 'lines': lines}).encode('utf-8')); return
+
         if parsed.path == '/api/fs':
             if not require_auth(self): return
             q = parse_qs(parsed.query); d = q.get('dir',[''])[0]
@@ -1001,23 +1260,56 @@ class Handler(SimpleHTTPRequestHandler):
                     out.append({'name':entry.name,'is_dir':entry.is_dir(),'size':(entry.stat().st_size if entry.is_file() else 0)})
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'dir':d,'entries':out}).encode('utf-8')); return
+
+        if parsed.path == '/api/fs_read':
+            if not require_auth(self): return
+            q = parse_qs(parsed.query); p = (q.get('path',[''])[0])
+            full = os.path.abspath(p)
+            if not full.startswith(NS_HOME): self._set_headers(403); self.wfile.write(b'{"error":"forbidden"}'); return
+            if not os.path.exists(full) or not os.path.isfile(full):
+                self._set_headers(404); self.wfile.write(b'{"error":"not found"}'); return
+            try:
+                size = os.path.getsize(full)
+                content = open(full,'rb').read(500_000).decode('utf-8','ignore')
+                self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'path':full,'size':size,'content':content}).encode('utf-8')); return
+            except Exception as e:
+                self._set_headers(500); self.wfile.write(json.dumps({'ok':False,'error':str(e)}).encode('utf-8')); return
+
         if parsed.path == '/site':
             index = os.path.join(SITE_DIR,'index.html')
             self._set_headers(200,'text/html; charset=utf-8'); self.wfile.write(read_text(index,'<h1>No site yet</h1>').encode('utf-8')); return
+
         self._set_headers(404); self.wfile.write(b'{"error":"not found"}')
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if not rate_limit_ok(self, parsed.path):
+            self._set_headers(429); self.wfile.write(b'{"error":"rate"}'); return
+        if banned(self):
+            self._set_headers(429); self.wfile.write(b'{"error":"locked"}'); return
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else ''
+
         if parsed.path == '/api/login':
-            try: data = json.loads(body or '{}'); user=data.get('user'); pwd=data.get('pass')
-            except Exception: data={}; user=''; pwd=''
-            if auth_enabled() and check_login(user, pwd):
-                tok = new_session(user)
-                self._set_headers(200, 'application/json', {'Set-Cookie': f'NSSESS={tok}; Path=/; HttpOnly'})
-                self.wfile.write(b'{"ok":true}'); return
+            try: data = json.loads(body or '{}'); user=data.get('user',''); pwd=data.get('pass',''); otp=data.get('otp','')
+            except Exception: data={}; user=''; pwd=''; otp=''
+            if not user or not pwd:
+                self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
+            if check_login(user, pwd):
+                sec = user_2fa_secret(user)
+                if require_2fa() or sec:
+                    now = totp_now(sec)
+                    if not otp or otp != now:
+                        login_fail(self)
+                        self._set_headers(401); self.wfile.write(b'{"ok":false,"need_2fa":true}'); return
+                token, csrf = new_session(user)
+                login_ok(self)
+                audit(f'LOGIN OK user={user} ip={self.client_address[0]}')
+                self._set_headers(200, 'application/json', {'Set-Cookie': f'NSSESS={token}; Path=/; HttpOnly; SameSite=Strict'})
+                self.wfile.write(json.dumps({'ok':True,'csrf':csrf}).encode('utf-8')); return
+            login_fail(self); audit(f'LOGIN FAIL user={user} ip={self.client_address[0]}')
             self._set_headers(401); self.wfile.write(b'{"ok":false}'); return
+
         if parsed.path == '/api/control':
             if not require_auth(self): return
             try: data = json.loads(body or '{}')
@@ -1027,10 +1319,13 @@ class Handler(SimpleHTTPRequestHandler):
             if action == 'enable' and target:
                 try: 
                     if os.path.exists(flag): os.remove(flag)
+                    audit(f'MONITOR ENABLE {target} ip={self.client_address[0]}')
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             if action == 'disable' and target:
-                try: open(flag,'w').close(); self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
+                try: open(flag,'w').close()
+                    audit(f'MONITOR DISABLE {target} ip={self.client_address[0]}')
+                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
             if action in ('backup','version','restart_monitors'):
@@ -1038,9 +1333,11 @@ class Handler(SimpleHTTPRequestHandler):
                     if action=='backup': os.system(f'\"{self_path}\" --backup >/dev/null 2>&1 &')
                     if action=='version': os.system(f'\"{self_path}\" --version-snapshot >/dev/null 2>&1 &')
                     if action=='restart_monitors': os.system(f'\"{self_path}\" --restart-monitors >/dev/null 2>&1 &')
+                    audit(f'CONTROL {action} ip={self.client_address[0]}')
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
+
         if parsed.path == '/api/chat':
             if not require_auth(self): return
             try: data = json.loads(body or '{}')
@@ -1050,6 +1347,7 @@ class Handler(SimpleHTTPRequestHandler):
             try: open(CHATLOG,'a',encoding='utf-8').write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} Q:{prompt} A:{reply}\n')
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'reply':reply}).encode('utf-8')); return
+
         if parsed.path == '/api/webgen':
             if not require_auth(self): return
             try: data = json.loads(body or '{}')
@@ -1062,14 +1360,58 @@ class Handler(SimpleHTTPRequestHandler):
             pages = [p for p in os.listdir(SITE_DIR) if p.endswith('.html')]
             links = '\n'.join([f'<li><a href="/site/{p}">{p}</a></li>' for p in pages if p!='index.html'])
             write_text(os.path.join(SITE_DIR,'index.html'), f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Site</title></head><body><h1>Site</h1><ul>{links}</ul></body></html>')
+            audit(f'WEBGEN page={slug}.html ip={self.client_address[0]}')
             self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'page':f'/site/{slug}.html'}).encode('utf-8')); return
-        if parsed.path.startswith('/site/'):
-            p = parsed.path[len('/site/'):]
-            full = os.path.join(SITE_DIR, p)
-            if not os.path.abspath(full).startswith(SITE_DIR): self._set_headers(403); self.wfile.write(b'{}'); return
-            if os.path.exists(full):
-                self._set_headers(200, 'text/html; charset=utf-8'); self.wfile.write(read_text(full).encode('utf-8')); return
-            self._set_headers(404); self.wfile.write(b'{}'); return
+
+        # File manager actions
+        if parsed.path == '/api/fs_write':
+            if not require_auth(self): return
+            try: data=json.loads(body or '{}')
+            except Exception: data={}
+            path=data.get('path',''); content=data.get('content','')
+            full=os.path.abspath(path)
+            if not full.startswith(NS_HOME): self._set_headers(403); self.wfile.write(b'{"error":"forbidden"}'); return
+            try: write_text(full, content); audit(f'FS WRITE {full} ip={self.client_address[0]}'); self._set_headers(200); self.wfile.write(b'{"ok":true}')
+            except Exception as e: self._set_headers(500); self.wfile.write(json.dumps({'ok':False,'error':str(e)}).encode('utf-8'))
+            return
+
+        if parsed.path == '/api/fs_mkdir':
+            if not require_auth(self): return
+            try: data=json.loads(body or '{}')
+            except Exception: data={}
+            path=data.get('path','')
+            full=os.path.abspath(path)
+            if not full.startswith(NS_HOME): self._set_headers(403); self.wfile.write(b'{"error":"forbidden"}'); return
+            try: Path(full).mkdir(parents=True, exist_ok=True); audit(f'FS MKDIR {full} ip={self.client_address[0]}'); self._set_headers(200); self.wfile.write(b'{"ok":true}')
+            except Exception as e: self._set_headers(500); self.wfile.write(json.dumps({'ok':False,'error':str(e)}).encode('utf-8'))
+            return
+
+        if parsed.path == '/api/fs_mv':
+            if not require_auth(self): return
+            try: data=json.loads(body or '{}')
+            except Exception: data={}
+            src=data.get('src',''); dst=data.get('dst','')
+            srcf=os.path.abspath(src); dstf=os.path.abspath(dst)
+            if not srcf.startswith(NS_HOME) or not dstf.startswith(NS_HOME): self._set_headers(403); self.wfile.write(b'{"error":"forbidden"}'); return
+            try: os.rename(srcf,dstf); audit(f'FS MV {srcf} -> {dstf} ip={self.client_address[0]}'); self._set_headers(200); self.wfile.write(b'{"ok":true}')
+            except Exception as e: self._set_headers(500); self.wfile.write(json.dumps({'ok':False,'error':str(e)}).encode('utf-8'))
+            return
+
+        if parsed.path == '/api/fs_rm':
+            if not require_auth(self): return
+            try: data=json.loads(body or '{}')
+            except Exception: data={}
+            path=data.get('path',''); full=os.path.abspath(path)
+            if not full.startswith(NS_HOME): self._set_headers(403); self.wfile.write(b'{"error":"forbidden"}'); return
+            try:
+                if os.path.isdir(full): os.rmdir(full)
+                elif os.path.isfile(full): os.remove(full)
+                audit(f'FS RM {full} ip={self.client_address[0]}')
+                self._set_headers(200); self.wfile.write(b'{"ok":true}')
+            except Exception as e:
+                self._set_headers(500); self.wfile.write(json.dumps({'ok':False,'error':str(e)}).encode('utf-8'))
+            return
+
         self._set_headers(400); self.wfile.write(b'{"ok":false}')
 
 def pick_host_port():
@@ -1096,13 +1438,29 @@ def pick_host_port():
         host = '127.0.0.1'
     return host, port
 
+def tls_params():
+    if not yaml_flag('security.tls_enabled', False):
+        return None
+    crt = yaml_val('security.tls_cert','keys/tls.crt')
+    key = yaml_val('security.tls_key','keys/tls.key')
+    return os.path.join(NS_HOME,crt), os.path.join(NS_HOME,key)
+
 if __name__ == '__main__':
     host, port = pick_host_port()
     os.chdir(NS_WWW)
+    crt_key = tls_params()
+    import ssl
     for h in (host, '127.0.0.1', '0.0.0.0'):
         try:
             httpd = HTTPServer((h, port), Handler)
-            print(f"NovaShield Web Server on http://{h}:{port}")
+            if crt_key:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(crt_key[0], crt_key[1])
+                httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+                scheme='https'
+            else:
+                scheme='http'
+            print(f"NovaShield Web Server on {scheme}://{h}:{port}")
             httpd.serve_forever()
         except Exception as e:
             print(f"Bind failed on {h}:{port}: {e}", file=sys.stderr)
@@ -1119,7 +1477,7 @@ write_dashboard(){
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NovaShield — JARVIS Edition</title>
+  <title>NovaShield â€” JARVIS Edition</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -1141,6 +1499,7 @@ write_dashboard(){
     <button data-tab="status" class="active">Status</button>
     <button data-tab="alerts">Alerts</button>
     <button data-tab="files">Files</button>
+    <button data-tab="terminal">Terminal</button>
     <button data-tab="ai">Jarvis</button>
     <button data-tab="webgen">Web Builder</button>
     <button data-tab="config">Config</button>
@@ -1149,15 +1508,15 @@ write_dashboard(){
   <main>
     <section id="tab-status" class="tab active">
       <section class="grid">
-        <div class="card" id="card-cpu"><h2>CPU</h2><pre class="value" id="cpu"></pre></div>
-        <div class="card" id="card-mem"><h2>Memory</h2><pre class="value" id="mem"></pre></div>
-        <div class="card" id="card-disk"><h2>Disk</h2><pre class="value" id="disk"></pre></div>
-        <div class="card" id="card-net"><h2>Network</h2><pre class="value" id="net"></pre></div>
-        <div class="card" id="card-int"><h2>Integrity</h2><pre class="value" id="int"></pre></div>
-        <div class="card" id="card-proc"><h2>Processes</h2><pre class="value" id="proc"></pre></div>
-        <div class="card" id="card-user"><h2>Users</h2><pre class="value" id="user"></pre></div>
-        <div class="card" id="card-svc"><h2>Services</h2><pre class="value" id="svc"></pre></div>
-        <div class="card" id="card-meta"><h2>Meta</h2><pre class="value" id="meta"></pre></div>
+        <div class="card" id="card-cpu"><h2>CPU</h2><div class="value" id="cpu"></div></div>
+        <div class="card" id="card-mem"><h2>Memory</h2><div class="value" id="mem"></div></div>
+        <div class="card" id="card-disk"><h2>Disk</h2><div class="value" id="disk"></div></div>
+        <div class="card" id="card-net"><h2>Network</h2><div class="value" id="net"></div></div>
+        <div class="card" id="card-int"><h2>Integrity</h2><div class="value" id="int"></div></div>
+        <div class="card" id="card-proc"><h2>Processes</h2><div class="value" id="proc"></div></div>
+        <div class="card" id="card-user"><h2>Users</h2><div class="value" id="user"></div></div>
+        <div class="card" id="card-svc"><h2>Services</h2><div class="value" id="svc"></div></div>
+        <div class="card" id="card-meta"><h2>Meta</h2><div class="value" id="meta"></div></div>
       </section>
       <div class="panel">
         <h3>Monitors Control</h3>
@@ -1191,6 +1550,23 @@ write_dashboard(){
           <button id="btn-list">List</button>
         </div>
         <div id="filelist"></div>
+        <div id="viewer" class="panel" style="display:none; margin-top:10px;">
+          <h3 id="viewer-title">Viewer</h3>
+          <pre id="viewer-content" style="white-space:pre-wrap; overflow-x:auto;"></pre>
+        </div>
+        <div class="file-actions">
+          <input id="newpath" placeholder="Path to create or save" />
+          <button id="btn-mkdir">Mkdir</button>
+          <button id="btn-save">Save Viewer -> Path</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-terminal" class="tab">
+      <div class="panel">
+        <h3>Web Terminal</h3>
+        <div id="term" tabindex="0"></div>
+        <div class="term-hint">Type here. Press Ctrl-C to interrupt. Idle timeout applies.</div>
       </div>
     </section>
 
@@ -1220,10 +1596,21 @@ write_dashboard(){
     <section id="tab-config" class="tab">
       <div class="panel">
         <h3>Config (read-only here)</h3>
-        <pre id="config"></pre>
+        <pre id="config" style="white-space:pre-wrap;"></pre>
       </div>
     </section>
   </main>
+
+  <div id="login" class="login" style="display:none;">
+    <div class="login-card">
+      <h3>Login</h3>
+      <input id="li-user" placeholder="Username" />
+      <input id="li-pass" placeholder="Password" type="password" />
+      <input id="li-otp" placeholder="2FA Code (if enabled)" />
+      <button id="li-btn">Sign in</button>
+      <div id="li-msg"></div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
@@ -1259,45 +1646,101 @@ main{padding:16px}
 .filebar{display:flex;gap:8px;margin-bottom:8px} .filebar input{flex:1;padding:8px;border-radius:8px;border:1px solid #143055;background:#0b1830;color:#d7e3ff}
 #filelist{font-size:13px;white-space:pre-wrap;background:#081426;border:1px solid #143055;border-radius:8px;padding:8px}
 textarea#wcontent{width:100%;height:160px;background:#0b1830;color:#d7e3ff;border:1px solid #143055;border-radius:8px;padding:8px}
+.login{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
+.login-card{background:#0c162b;border:1px solid #15345f;border-radius:12px;width:320px;padding:16px;color:#e5f0ff}
+.login-card input{width:100%;margin:6px 0;padding:8px;border-radius:8px;border:1px solid #143055;background:#0b1830;color:#d7e3ff}
+.login-card button{width:100%;padding:10px;border-radius:8px;background:#0a1426;border:1px solid #173764;color:#cfe6ff;cursor:pointer}
+#term{background:#000;color:#9fe4b9;border:1px solid #173764;border-radius:10px;height:300px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;padding:8px;white-space:pre-wrap;outline:none}
+.term-hint{color:#93a3c0;font-size:12px;margin-top:6px}
 @media (max-width:980px){ .grid{grid-template-columns:1fr} }
 CSS
 
   write_file "${NS_WWW}/app.js" 644 <<'JS'
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
+
 const tabs = $$('.tabs button');
 tabs.forEach(b=>b.onclick=()=>{ tabs.forEach(x=>x.classList.remove('active')); b.classList.add('active'); $$('.tab').forEach(x=>x.classList.remove('active')); $('#tab-'+b.dataset.tab).classList.add('active'); });
+
+let CSRF = '';
+
 $('#btn-refresh').onclick = refresh;
 
-async function api(path, opts){ const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}},opts||{})); if(!r.ok){ throw new Error('API error'); } return r; }
+// Header actions
+$$('header .actions button[data-act]').forEach(btn=>{
+  btn.onclick = async () => {
+    const act = btn.dataset.act;
+    btn.disabled = true;
+    try {
+      await fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json','X-CSRF':CSRF}, body: JSON.stringify({action: act})});
+      toast(`Triggered: ${act}`);
+    } catch(e) {
+      console.error(e); toast(`Failed: ${act}`);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+});
+
+function toast(msg){
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.position='fixed'; t.style.right='14px'; t.style.bottom='14px';
+  t.style.background='#0a1426'; t.style.border='1px solid #173764'; t.style.borderRadius='8px'; t.style.padding='8px 10px'; t.style.color='#cfe6ff'; t.style.zIndex=9999;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 2500);
+}
+
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));
+  if(r.status===401){
+    showLogin(); throw new Error('unauthorized');
+  }
+  if(r.status===403){
+    toast('Forbidden or CSRF'); throw new Error('forbidden');
+  }
+  if(!r.ok){ throw new Error('API error'); }
+  return r;
+}
+
+function human(val, unit=''){ if(val===undefined || val===null) return '?'; return `${val}${unit}`; }
+function setCard(id, text){ const el = $('#'+id); el.textContent = text; }
 
 async function refresh(){
   try{
     const r = await api('/api/status'); const j = await r.json();
-    $('#cpu').textContent = JSON.stringify(j.cpu,null,2);
-    $('#mem').textContent = JSON.stringify(j.memory,null,2);
-    $('#disk').textContent = JSON.stringify(j.disk,null,2);
-    $('#net').textContent = JSON.stringify(j.network,null,2);
-    $('#int').textContent = JSON.stringify(j.integrity,null,2);
-    $('#proc').textContent = JSON.stringify(j.process,null,2);
-    $('#user').textContent = JSON.stringify(j.user,null,2);
-    $('#svc').textContent = JSON.stringify(j.services,null,2);
-    $('#meta').textContent = JSON.stringify({projects:j.projects_count,modules:j.modules_count,version:j.version,ts:j.ts},null,2);
+    CSRF = j.csrf || '';
+    const cpu = j.cpu || {};
+    setCard('cpu', `Load: ${human(cpu.load1)} | Level: ${cpu.level || 'OK'}`);
+    const mem = j.memory || {};
+    setCard('mem', `Used: ${human(mem.used_pct, '%')} | Warn: ${human(mem.warn, '%')} | Crit: ${human(mem.crit, '%')} | Level: ${mem.level || 'OK'}`);
+    const dsk = j.disk || {};
+    setCard('disk', `Mount: ${dsk.mount || '/'} | Used: ${human(dsk.use_pct, '%')} | Level: ${dsk.level || 'OK'}`);
+    const net = j.network || {};
+    setCard('net', `IP: ${net.ip || '?'} | Public: ${net.public_ip || '?'} | Loss: ${human(net.loss_pct, '%')} | RTT: ${human(net.rtt_avg_ms, 'ms')} | Level: ${net.level || 'OK'}`);
+    setCard('int', `Integrity monitor active`);
+    setCard('proc', `Process watch active`);
+    setCard('user', `User sessions tracked`);
+    setCard('svc', `Service checks ${j.services ? 'active' : 'n/a'}`);
+    setCard('meta', `Projects: ${j.projects_count} | Modules: ${j.modules_count} | Version: ${j.version} | TS: ${j.ts}`);
     const ul = $('#alerts'); ul.innerHTML='';
     (j.alerts||[]).slice(-200).reverse().forEach(line=>{ const li=document.createElement('li'); li.textContent=line; ul.appendChild(li);});
     const levels = {cpu:j.cpu?.level, memory:j.memory?.level, disk:j.disk?.level, network:j.network?.level};
     const map = {OK:'ok', WARN:'warn', CRIT:'crit'};
     Object.entries(levels).forEach(([k,v])=>{
       const ids = {memory:'mem', disk:'disk', network:'net', cpu:'cpu'};
-      const el = $('#card-'+(ids[k]||k));
+      const cardId = {memory:'card-mem', disk:'card-disk', network:'card-net', cpu:'card-cpu'}[k];
+      const el = $('#'+cardId);
       if(!el) return; el.classList.remove('ok','warn','crit'); if(map[v]) el.classList.add(map[v]);
     });
     const conf = await (await api('/api/config')).text(); $('#config').textContent = conf;
   }catch(e){ console.error(e); }
 }
 
-async function post(action,target){ try{ await api('/api/control',{method:'POST',body:JSON.stringify({action,target})}); }catch(e){} }
-
+// Monitors toggles
+async function post(action,target){
+  try{ await api('/api/control',{method:'POST', headers:{'Content-Type':'application/json','X-CSRF':CSRF}, body:JSON.stringify({action,target})}); toast(`${action} ${target}`); }catch(e){ toast('Action failed'); }
+}
 $$('.toggle').forEach(b=>{
   b.onclick=async()=>{
     const t=b.dataset.target;
@@ -1305,31 +1748,105 @@ $$('.toggle').forEach(b=>{
   };
 });
 
-$('#btn-list').onclick=async()=>{
-  const dir = $('#cwd').value.replace('~',''+(window.homedir||''));
+// File Manager
+$('#btn-list').onclick=()=>list($('#cwd').value);
+async function list(dir){
   try{
-    const j = await (await api('/api/fs?dir='+encodeURIComponent(dir))).json();
+    const j = await (await api('/api/fs?dir='+encodeURIComponent(dir.replace(/^~\//, (window.homedir||'')+'/')))).json();
     $('#cwd').value = j.dir;
-    $('#filelist').textContent = j.entries.map(e=> (e.is_dir?'[D] ':'[F] ')+e.name+(e.size?(' ('+e.size+'b)'):'') ).join('\n');
-  }catch(e){ console.error(e); }
-};
+    const wrap = $('#filelist'); wrap.innerHTML='';
+    (j.entries||[]).forEach(e=>{
+      const row = document.createElement('div');
+      row.style.cursor='pointer';
+      row.textContent = (e.is_dir?'[D] ':'[F] ') + e.name + (e.size?(' ('+e.size+'b)'):'');
+      row.onclick = ()=>{
+        if(e.is_dir){
+          list(j.dir.replace(/\/+$/,'') + '/' + e.name);
+        } else {
+          viewFile(j.dir.replace(/\/+$/,'') + '/' + e.name);
+        }
+      };
+      wrap.appendChild(row);
+    });
+  }catch(e){ console.error(e); toast('List failed'); }
+}
+async function viewFile(path){
+  try{
+    const j = await (await api('/api/fs_read?path='+encodeURIComponent(path))).json();
+    if(!j.ok){ toast('Open failed'); return; }
+    $('#viewer-title').textContent = `Viewer â€” ${j.path} (${j.size} bytes)`;
+    $('#viewer-content').textContent = j.content || '';
+    $('#viewer').style.display = '';
+  }catch(e){ console.error(e); toast('Open failed'); }
+}
+$('#btn-mkdir').onclick=async()=>{
+  const p=$('#newpath').value.trim(); if(!p) return;
+  try{ await api('/api/fs_mkdir',{method:'POST', headers:{'Content-Type':'application/json','X-CSRF':CSRF}, body:JSON.stringify({path:p})}); toast('mkdir ok'); list($('#cwd').value);}catch(e){toast('mkdir failed')}
+}
+$('#btn-save').onclick=async()=>{
+  const p=$('#newpath').value.trim(); const c=$('#viewer-content').textContent;
+  if(!p) return; try{ await api('/api/fs_write',{method:'POST', headers:{'Content-Type':'application/json','X-CSRF':CSRF}, body:JSON.stringify({path:p,content:c})}); toast('saved'); list($('#cwd').value);}catch(e){toast('save failed')}
+}
 
+// Jarvis chat
 $('#send').onclick=async()=>{
   const prompt = $('#prompt').value.trim(); if(!prompt) return;
   const log = $('#chatlog'); const you = document.createElement('div'); you.textContent='You: '+prompt; log.appendChild(you);
   try{
-    const j = await (await api('/api/chat',{method:'POST',body:JSON.stringify({prompt})})).json();
+    const j = await (await api('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':CSRF},body:JSON.stringify({prompt})})).json();
     const ai = document.createElement('div'); ai.textContent='Jarvis: '+j.reply; log.appendChild(ai); $('#prompt').value=''; log.scrollTop=log.scrollHeight;
   }catch(e){ console.error(e); }
 };
 
-$('#wmake').onclick=async()=>{
-  const title = $('#wtitle').value.trim() || 'Untitled';
-  const content = $('#wcontent').value.trim() || '<p>Hello</p>';
+// Web Terminal
+let ws=null;
+function connectTerm(){
   try{
-    const j = await (await api('/api/webgen',{method:'POST',body:JSON.stringify({title,content})})).json();
-    $('#wresult').textContent = 'Created: '+j.page+' (visit: /site)';
-  }catch(e){ console.error(e); }
+    const proto = location.protocol==='https:'?'wss':'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/term`);
+    const term = $('#term');
+    term.textContent='';
+    ws.binaryType='arraybuffer';
+    ws.onopen=()=>{ term.focus(); toast('Terminal connected'); };
+    ws.onmessage=(ev)=>{
+      if(ev.data instanceof ArrayBuffer){
+        const dec = new TextDecoder('utf-8',{fatal:false}); const txt = dec.decode(new Uint8Array(ev.data));
+        term.textContent += txt; term.scrollTop = term.scrollHeight;
+      }else{
+        term.textContent += ev.data; term.scrollTop = term.scrollHeight;
+      }
+    };
+    ws.onclose=()=>{ toast('Terminal closed'); ws=null; };
+    term.onkeydown=(e)=>{
+      if(!ws || ws.readyState!==1) return;
+      e.preventDefault();
+      let out='';
+      if(e.key==='Enter') out='\r';
+      else if(e.key==='Backspace') out='\x7f';
+      else if(e.key==='Tab') out='\t';
+      else if(e.key==='ArrowUp') out='\x1b[A';
+      else if(e.key==='ArrowDown') out='\x1b[B';
+      else if(e.key==='ArrowRight') out='\x1b[C';
+      else if(e.key==='ArrowLeft') out='\x1b[D';
+      else if(e.ctrlKey && e.key.toLowerCase()==='c') out='\x03';
+      else if(e.ctrlKey && e.key.toLowerCase()==='d') out='\x04';
+      else if(e.key.length===1) out=e.key;
+      if(out){ ws.send(new TextEncoder().encode(out)); }
+    };
+  }catch(e){ console.error(e); toast('Terminal connection failed'); }
+}
+$('#tab-terminal').addEventListener('click', ()=>{ if(!ws) connectTerm(); });
+
+function showLogin(){
+  $('#login').style.display='';
+}
+$('#li-btn').onclick=async()=>{
+  const user=$('#li-user').value.trim(), pass=$('#li-pass').value, otp=$('#li-otp').value.trim();
+  try{
+    const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'}, body:JSON.stringify({user,pass,otp})});
+    if(r.ok){ const j=await r.json(); CSRF=j.csrf||''; $('#login').style.display='none'; refresh(); }
+    else{ $('#li-msg').textContent='Login failed'; }
+  }catch(e){ $('#li-msg').textContent='Login error'; }
 };
 
 refresh(); setInterval(refresh, 5000);
@@ -1393,6 +1910,7 @@ install_all(){
   install_dependencies
   write_default_config
   generate_keys
+  generate_self_signed_tls
   write_notify_py
   write_server_py
   write_dashboard
@@ -1402,7 +1920,7 @@ install_all(){
 }
 
 start_all(){
-  ensure_dirs; write_default_config; generate_keys; write_notify_py; write_server_py; write_dashboard
+  ensure_dirs; write_default_config; generate_keys; generate_self_signed_tls; write_notify_py; write_server_py; write_dashboard
   open_session
   start_monitors
   start_web
@@ -1436,58 +1954,35 @@ j['_userdb']=ud
 open(p,'w').write(json.dumps(j))
 print('User stored')
 PY
-  ns_ok "User '$user' added."
+  ns_ok "User '$user' added. Enable/confirm auth in config.yaml (security.auth_enabled: true)"
 }
 
 enable_2fa(){
-  local user
-  read -rp "Username for 2FA setup: " user
-  if [ ! -f "$NS_SESS_DB" ]; then 
-    ns_err "No users found. Add a user first with --add-user"
-    return 1
-  fi
-  
-  # Check if user exists
-  local exists; exists=$(python3 - "$NS_SESS_DB" "$user" <<'PY'
-import json,sys
-try: j=json.load(open(sys.argv[1]))
-except: j={}
-ud=j.get('_userdb',{})
-print('yes' if sys.argv[2] in ud else 'no')
+  local user secret
+  read -rp "Username to set 2FA: " user
+  # generate base32 secret
+  secret=$(python3 - <<'PY'
+import os,base64; print(base64.b32encode(os.urandom(10)).decode().strip('='))
 PY
 )
-  
-  if [ "$exists" != "yes" ]; then
-    ns_err "User '$user' not found. Add user first with --add-user"
-    return 1
-  fi
-  
-  # Generate TOTP secret
-  local secret; secret=$(head -c 20 /dev/urandom | base32 | tr -d '=')
-  
-  # Store TOTP secret
+  echo "TOTP secret (Base32): $secret"
+  echo "Add to your authenticator app (issuer: NovaShield, account: $user)."
   python3 - "$NS_SESS_DB" "$user" "$secret" <<'PY'
 import json,sys
 p,u,s=sys.argv[1],sys.argv[2],sys.argv[3]
 try: j=json.load(open(p))
 except: j={}
-totp=j.get('_totp',{})
-totp[u]=s
-j['_totp']=totp
+t=j.get('_2fa',{})
+t[u]=s
+j['_2fa']=t
 open(p,'w').write(json.dumps(j))
+print('2FA secret stored')
 PY
-  
-  # Update config to enable TOTP
-  sed -i 's/totp_enabled: false/totp_enabled: true/' "$NS_CONF" 2>/dev/null || true
-  
-  ns_ok "2FA enabled for user '$user'"
-  echo "TOTP Secret: $secret"
-  echo "QR Code URL: https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl=otpauth://totp/NovaShield:${user}%3Fsecret%3D${secret}%26issuer%3DNovaShield"
-  echo "Add this secret to your authenticator app (Google Authenticator, Authy, etc.)"
+  ns_ok "2FA set for '$user'. Set security.require_2fa: true to enforce."
 }
 
 usage(){ cat <<USG
-NovaShield Terminal ${NS_VERSION} — JARVIS Edition
+NovaShield Terminal ${NS_VERSION} â€” JARVIS Edition
 Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user|--enable-2fa]
 USG
 }
@@ -1507,7 +2002,7 @@ menu(){
   select opt in \
     "Start All" "Stop All" "Restart Monitors" "Status" \
     "Backup" "Version Snapshot" "Encrypt File/Dir" "Decrypt File" \
-    "Add Web User" "Enable 2FA" "Test Notification" "Open Dashboard URL" "Quit"; do
+    "Add Web User" "Enable 2FA for User" "Test Notification" "Open Dashboard URL" "Quit"; do
     case $REPLY in
       1) start_all;;
       2) stop_all;;
