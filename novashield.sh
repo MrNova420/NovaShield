@@ -1888,6 +1888,21 @@ SERVICE
   ns_ok "systemd user service written. Enable with: systemctl --user enable --now novashield"
 }
 
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
+
 start_web(){
   ns_log "Starting web server..."
   stop_web || true
@@ -1904,6 +1919,21 @@ stop_web(){
   fi
 }
 
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
+
 open_session(){ echo "$(ns_now) START ${NS_VERSION}" >>"$NS_SESSION"; }
 close_session(){ echo "$(ns_now) STOP" >>"$NS_SESSION"; }
 
@@ -1916,18 +1946,51 @@ install_all(){
   write_notify_py
   write_server_py
   write_dashboard
+  ensure_auth_bootstrap     # <--- add this line
   setup_termux_service || true
   setup_systemd_user || true
   ns_ok "Install complete. Use: $0 --start"
 }
 
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
+
+
 start_all(){
   ensure_dirs; write_default_config; generate_keys; generate_self_signed_tls; write_notify_py; write_server_py; write_dashboard
+  ensure_auth_bootstrap     # <--- add this line
   open_session
   start_monitors
   start_web
   ns_ok "NovaShield is running. Open the dashboard in your browser."
 }
+
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
 
 stop_all(){
   stop_monitors || true
@@ -1935,7 +1998,37 @@ stop_all(){
   close_session
 }
 
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
+
 restart_monitors(){ stop_monitors || true; start_monitors; }
+
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
 
 add_user(){
   local user pass salt
