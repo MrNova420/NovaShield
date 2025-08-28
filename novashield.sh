@@ -1,26 +1,19 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 2.0 — All‑in‑One Installer & Runtime (single script)
+# NovaShield Terminal 2.0+ — All‑in‑One Installer & Runtime (Improved)
 # ==============================================================================
-# Author: Nova (Mr Nova) + GPT-5 Thinking
+# Author: Nova (MrNova) + Copilot Full Rewrite
 # License: MIT
-# Platform: Termux (Android) + Linux (Debian/Ubuntu/Arch/fedora-ish) auto-detect
-# Purpose : Fully private, modular terminal environment with monitors, web UI,
-#           encryption, backups, versions, alerts, and manual overrides.
-#
-# This **single script** bootstraps the entire project structure, writes all
-# subfiles (Python web server, HTML/CSS/JS dashboard, config, sample modules),
-# handles install, start/stop, encryption, backups, and more. You can commit
-# this one file to GitHub. Running it creates everything under ~/.novashield/
-# and sets up services for Termux (termux-services) or systemd user services on
-# Linux when available.
+# Platform: Termux (Android) + Linux (Debian/Ubuntu/Arch/Fedora)
+# Purpose: Fully private, modular terminal environment with monitors, web UI,
+#          encryption, backups, versions, alerts, and manual overrides.
 # ==============================================================================
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
 # ---------------------------------- VERSION ----------------------------------
-NS_VERSION="2.0.0"
+NS_VERSION="2.1.0"
 
 # ------------------------------- GLOBAL PATHS ---------------------------------
 NS_HOME="${HOME}/.novashield"
@@ -40,18 +33,14 @@ NS_VERSION_FILE="${NS_HOME}/version.txt"
 NS_SELF_PATH_FILE="${NS_BIN}/self_path"
 NS_LAUNCHER_BACKUPS="${NS_BIN}/backups"
 NS_ALERTS="${NS_LOGS}/alerts.log"
+NS_BACKUP_DIR="${NS_HOME}/backups"
 
 # ---------------------------- RUNTIME CONSTANTS ------------------------------
 NS_DEFAULT_PORT=8765
 NS_DEFAULT_HOST="127.0.0.1"
 
 # ------------------------------ SELF RESOLUTION ------------------------------
-NS_SELF="${BASH_SOURCE[0]}"
-if command -v realpath >/dev/null 2>&1; then
-  NS_SELF="$(realpath "${NS_SELF}")" || true
-elif command -v readlink >/dev/null 2>&1; then
-  NS_SELF="$(readlink -f "${NS_SELF}" 2>/dev/null || echo "${NS_SELF}")"
-fi
+NS_SELF="$(realpath "${BASH_SOURCE[0]}")"
 
 # ---------------------------------- COLORS -----------------------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -63,33 +52,27 @@ ns_warn(){ echo -e "${YELLOW}$(ns_now) [WARN ] $*${NC}" | tee -a "${NS_HOME}/lau
 ns_err() { echo -e "${RED}$(ns_now) [ERROR] $*${NC}" | tee -a "${NS_HOME}/launcher.log" >&2; }
 ns_ok()  { echo -e "${GREEN}✔ $*${NC}"; }
 
-trap 'ns_err "Unexpected error at line $LINENO"' ERR
+error_handler() {
+  ns_err "Unexpected error at line $1: $2"
+  exit 1
+}
+trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
 
 # -------------------------------- UTILITIES ----------------------------------
 die(){ ns_err "$*"; exit 1; }
 require_cmd(){ command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
-write_file(){ # write_file <path> <mode> <<'EOF' ... EOF
-  local path="$1"; local mode="$2"; shift 2
-  install -m "$mode" /dev/null "$path" 2>/dev/null || true
-  cat >"$path"
-}
+write_file(){ local path="$1"; local mode="$2"; shift 2; install -m "$mode" /dev/null "$path" 2>/dev/null || true; cat >"$path"; }
 append_file(){ local path="$1"; shift; cat >>"$path"; }
-json_escape(){ python3 - <<'PY'
-import json,sys
-print(json.dumps(sys.stdin.read()))
-PY
-}
+safe_mkdir(){ mkdir -p "$1" && chmod 700 "$1"; }
 
 # --------------------------- ENVIRONMENT DETECTION ---------------------------
 IS_TERMUX=0
-if uname -a | grep -iq termux || [ -n "${PREFIX:-}" ] && echo "$PREFIX" | grep -q "/com.termux/" 2>/dev/null; then
+if uname -a | grep -iq termux || [[ -n "${PREFIX:-}" && "$PREFIX" == *"/com.termux/"* ]]; then
   IS_TERMUX=1
 fi
 
 OS_FAMILY="linux"
-if [ "$(uname -s)" != "Linux" ]; then
-  OS_FAMILY="other"
-fi
+[[ "$(uname -s)" != "Linux" ]] && OS_FAMILY="other"
 
 PKG_INSTALL(){
   if [ "$IS_TERMUX" -eq 1 ]; then
@@ -107,9 +90,9 @@ PKG_INSTALL(){
 
 # ---------------------------- DIRECTORY LAYOUT -------------------------------
 ensure_dirs(){
-  mkdir -p "$NS_BIN" "$NS_LOGS" "$NS_WWW" "$NS_MODULES" "$NS_PROJECTS" \
+  for d in "$NS_BIN" "$NS_LOGS" "$NS_WWW" "$NS_MODULES" "$NS_PROJECTS" \
            "$NS_VERSIONS" "$NS_KEYS" "$NS_CTRL" "$NS_TMP" "$NS_PID" \
-           "$NS_LAUNCHER_BACKUPS"
+           "$NS_LAUNCHER_BACKUPS" "$NS_BACKUP_DIR"; do safe_mkdir "$d"; done
   : >"$NS_ALERTS" || true
   echo "$NS_VERSION" >"$NS_VERSION_FILE"
   echo "$NS_SELF" >"$NS_SELF_PATH_FILE"
@@ -117,18 +100,16 @@ ensure_dirs(){
 
 # ------------------------------- DEFAULT CONF --------------------------------
 write_default_config(){
-  if [ -f "$NS_CONF" ]; then return 0; fi
+  [[ -f "$NS_CONF" ]] && return 0
   ns_log "Writing default config to $NS_CONF"
   write_file "$NS_CONF" 600 <<'YAML'
-# NovaShield Terminal 2.0 — config.yaml
-version: "2.0.0"
+version: "2.1.0"
 http:
   host: 127.0.0.1
   port: 8765
-  # If true, bind 0.0.0.0 (LAN access). Use with caution.
   allow_lan: false
 monitors:
-  cpu:         { enabled: true,  interval_sec: 3, warn_load: 2.00, crit_load: 4.00 }
+  cpu:         { enabled: true,  interval_sec: 3, warn_load: 2.50, crit_load: 4.50 }
   memory:      { enabled: true,  interval_sec: 3, warn_pct: 80,  crit_pct: 92 }
   disk:        { enabled: true,  interval_sec: 10, warn_pct: 85, crit_pct: 95, mount: "/" }
   network:     { enabled: true,  interval_sec: 5, iface: "", ping_host: "1.1.1.1", loss_warn: 20 }
@@ -136,7 +117,6 @@ monitors:
 logging:
   keep_days: 14
   alerts_enabled: true
-  alert_sink: ["terminal", "web"]
 backup:
   enabled: true
   max_keep: 10
@@ -148,24 +128,24 @@ keys:
 notifications:
   email:
     enabled: false
-    smtp_host: "smtp.example.com"
+    smtp_host: ""
     smtp_port: 587
-    username: "user@example.com"
-    password: "change-me"
-    to: ["you@example.com"]
+    username: ""
+    password: ""
+    to: []
   sms:
     enabled: false
-    provider: "twilio"  # placeholder
+    provider: ""
     sid: ""
     token: ""
-    from: "+10000000000"
-    to: ["+10000000000"]
+    from: ""
+    to: []
 updates:
   enabled: false
-  source: ""  # optional git URL or local path
+  source: ""
 sync:
   enabled: false
-  method: "rclone"  # placeholder, requires external tool
+  method: ""
   remote: ""
 YAML
 }
@@ -173,34 +153,13 @@ YAML
 # -------------------------------- DEPENDENCIES -------------------------------
 install_dependencies(){
   ns_log "Checking dependencies..."
-  local need=(python3 openssl awk sed grep tar gzip df du ps top uname head tail cut tr sha256sum)
-  # Busybox variants: sha256sum may be 'shasum -a 256' on some systems
+  local need=(python3 openssl awk sed grep tar gzip df du ps top uname head tail cut tr sha256sum curl)
   for c in "${need[@]}"; do
     if ! command -v "$c" >/dev/null 2>&1; then
       ns_warn "$c missing; attempting install"
-      case "$c" in
-        sha256sum)
-          PKG_INSTALL coreutils || true
-          ;;
-        python3)
-          PKG_INSTALL python python3 || true
-          ;;
-        openssl)
-          PKG_INSTALL openssl || true
-          ;;
-        tar)
-          PKG_INSTALL tar || true
-          ;;
-        gzip)
-          PKG_INSTALL gzip || true
-          ;;
-        *)
-          PKG_INSTALL "$c" || true
-          ;;
-      esac
+      PKG_INSTALL "$c" || true
     fi
   done
-  # Optional: termux-services for background
   if [ "$IS_TERMUX" -eq 1 ]; then
     if ! command -v sv-enable >/dev/null 2>&1; then
       ns_warn "Installing termux-services (optional)"
@@ -211,40 +170,44 @@ install_dependencies(){
 
 # --------------------------------- KEY GEN -----------------------------------
 generate_keys(){
-  if [ ! -f "${NS_KEYS}/private.pem" ] || [ ! -f "${NS_KEYS}/public.pem" ]; then
-    ns_log "Generating RSA keypair (configurable size)"
-    local bits
-    bits=$(awk -F': ' '/rsa_bits:/ {print $2}' "$NS_CONF" 2>/dev/null || echo 4096)
-    (cd "$NS_KEYS" && openssl genrsa -out private.pem "${bits}" && openssl rsa -in private.pem -pubout -out public.pem)
+  require_cmd openssl
+  local bits
+  bits=$(awk -F': ' '/rsa_bits:/ {print $2}' "$NS_CONF" 2>/dev/null || echo 4096)
+  [[ ! -f "${NS_KEYS}/private.pem" || ! -f "${NS_KEYS}/public.pem" ]] && {
+    ns_log "Generating RSA keypair (${bits} bits)"
+    openssl genrsa -out "${NS_KEYS}/private.pem" "$bits"
+    openssl rsa -in "${NS_KEYS}/private.pem" -pubout -out "${NS_KEYS}/public.pem"
     chmod 600 "${NS_KEYS}/private.pem"
-  fi
+  }
   local aesf
   aesf=$(awk -F': ' '/aes_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' || true)
-  [ -z "$aesf" ] && aesf="keys/aes.key"
-  if [ ! -f "${NS_HOME}/${aesf}" ]; then
+  [[ -z "$aesf" ]] && aesf="keys/aes.key"
+  [[ ! -f "${NS_HOME}/${aesf}" ]] && {
     ns_log "Generating AES key file: ${aesf}"
     head -c 64 /dev/urandom >"${NS_HOME}/${aesf}"
     chmod 600 "${NS_HOME}/${aesf}"
-  fi
+  }
 }
 
 # ------------------------------ ENCRYPTION UTIL ------------------------------
-# AES-256-CBC via OpenSSL with PBKDF2; RSA used for wrapping AES key if needed.
 aes_key_path(){ awk -F': ' '/aes_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' ; }
 enc_file(){
-  local in="$1"; local out="$2"; local key
-  key="${NS_HOME}/$(aes_key_path)"
+  local in="$1"; local out="$2"; local key="${NS_HOME}/$(aes_key_path)"
+  [[ ! -f "$in" ]] && die "Input file not found: $in"
   openssl enc -aes-256-cbc -salt -pbkdf2 -in "$in" -out "$out" -pass file:"$key"
+  ns_ok "Encrypted: $in → $out"
 }
 
 dec_file(){
-  local in="$1"; local out="$2"; local key
-  key="${NS_HOME}/$(aes_key_path)"
+  local in="$1"; local out="$2"; local key="${NS_HOME}/$(aes_key_path)"
+  [[ ! -f "$in" ]] && die "Input file not found: $in"
   openssl enc -d -aes-256-cbc -pbkdf2 -in "$in" -out "$out" -pass file:"$key"
+  ns_ok "Decrypted: $in → $out"
 }
 
 enc_dir(){
   local dir="$1"; local out="$2"
+  [[ ! -d "$dir" ]] && die "Input dir not found: $dir"
   local tmp="${NS_TMP}/tmp-$(date +%s).tar.gz"
   tar -C "$dir" -czf "$tmp" . || tar -czf "$tmp" "$dir"
   enc_file "$tmp" "$out"
@@ -264,28 +227,27 @@ backup_snapshot(){
   local stamp
   stamp=$(date '+%Y%m%d-%H%M%S')
   local tmp_tar="${NS_TMP}/backup-${stamp}.tar.gz"
-  local dest_dir="${NS_HOME}/backups"; mkdir -p "$dest_dir"
+  mkdir -p "$NS_BACKUP_DIR"
   ns_log "Creating backup snapshot: $stamp"
   local incl=( )
   while IFS= read -r line; do
     case "$line" in
-      -\ *|\ *-*) : ;; # ignore
       *projects*) incl+=("$NS_PROJECTS") ;;
       *modules*)  incl+=("$NS_MODULES") ;;
       *config.yaml*) incl+=("$NS_CONF") ;;
     esac
   done < <(awk '/backup:/,0' "$NS_CONF" 2>/dev/null || true)
-  [ ${#incl[@]} -eq 0 ] && incl=("$NS_PROJECTS" "$NS_MODULES" "$NS_CONF")
-  tar -czf "$tmp_tar" "${incl[@]}" 2>/dev/null || tar -C "$NS_HOME" -czf "$tmp_tar" projects modules config.yaml || true
+  [[ ${#incl[@]} -eq 0 ]] && incl=("$NS_PROJECTS" "$NS_MODULES" "$NS_CONF")
+  tar -czf "$tmp_tar" "${incl[@]}"
   local enc_enabled
   enc_enabled=$(awk -F': ' '/encrypt:/ {print $2}' "$NS_CONF" | head -n1 | tr -d ' ')
   local final
-  if [ "$enc_enabled" = "true" ]; then
-    final="${dest_dir}/backup-${stamp}.tar.gz.enc"
+  if [[ "$enc_enabled" == "true" ]]; then
+    final="${NS_BACKUP_DIR}/backup-${stamp}.tar.gz.enc"
     enc_file "$tmp_tar" "$final"
     rm -f "$tmp_tar"
   else
-    final="${dest_dir}/backup-${stamp}.tar.gz"
+    final="${NS_BACKUP_DIR}/backup-${stamp}.tar.gz"
     mv "$tmp_tar" "$final"
   fi
   ns_ok "Backup created: $final"
@@ -295,8 +257,8 @@ backup_snapshot(){
 rotate_backups(){
   local max_keep
   max_keep=$(awk -F': ' '/max_keep:/ {print $2}' "$NS_CONF" | tr -d ' ' || echo 10)
-  ls -1t "$NS_HOME/backups" 2>/dev/null | tail -n +$((max_keep+1)) | while read -r f; do
-    ns_warn "Removing old backup: $f"; rm -f "$NS_HOME/backups/$f" || true
+  ls -1t "$NS_BACKUP_DIR" 2>/dev/null | tail -n +$((max_keep+1)) | while read -r f; do
+    ns_warn "Removing old backup: $f"; rm -f "$NS_BACKUP_DIR/$f" || true
   done
 }
 
@@ -308,6 +270,7 @@ version_snapshot(){
   cp -a "$NS_PROJECTS" "$vdir/projects" 2>/dev/null || true
   cp -a "$NS_CONF" "$vdir/config.yaml" 2>/dev/null || true
   cp -a "$NS_HOME/launcher.log" "$vdir/launcher.log" 2>/dev/null || true
+  ns_ok "Version snapshot created: $vdir"
 }
 
 # -------------------------------- ALERTS -------------------------------------
@@ -319,62 +282,58 @@ alert(){
 }
 
 # ------------------------------- MONITORS ------------------------------------
-# Each monitor writes JSON and plain logs. Enable/disable via control flags.
 monitor_enabled(){
   local name="$1"
-  [ -f "${NS_CTRL}/${name}.disabled" ] && return 1 || return 0
+  [[ -f "${NS_CTRL}/${name}.disabled" ]] && return 1 || return 0
 }
 
-write_json(){ # write_json <path> <json-string>
-  local path="$1"; shift
-  printf '%s' "$*" >"$path"
-}
+write_json(){ local path="$1"; shift; printf '%s' "$*" >"$path"; }
 
 _monitor_cpu(){
-  local interval warn crit; interval=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' ')
+  local interval warn crit
+  interval=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' ')
   warn=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /warn_load/) print $2 }' "$NS_CONF" | tr -d ' ')
   crit=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /crit_load/) print $2 }' "$NS_CONF" | tr -d ' ')
-  [ -z "$interval" ] && interval=3
+  [[ -z "$interval" ]] && interval=3
   while true; do
     monitor_enabled cpu || { sleep "$interval"; continue; }
     local load1
     load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
     local lvl="OK"
-    awk -v l="$load1" -v w="$warn" -v c="$crit" 'BEGIN{lvl="OK"; if(l>=c){lvl="CRIT"} else if(l>=w){lvl="WARN"}; print lvl}' >/tmp/ns-cpu-lvl
-    lvl=$(cat /tmp/ns-cpu-lvl)
+    (( $(echo "$load1 >= $crit" | bc -l) )) && lvl="CRIT" || (( $(echo "$load1 >= $warn" | bc -l) )) && lvl="WARN"
     local js
     js="{\"ts\":\"$(ns_now)\",\"load1\":$load1,\"warn\":$warn,\"crit\":$crit,\"level\":\"$lvl\"}"
     write_json "${NS_LOGS}/cpu.json" "$js"
-    [ "$lvl" = "CRIT" ] && alert CRIT "CPU load high: $load1" || [ "$lvl" = "WARN" ] && alert WARN "CPU load elevated: $load1"
+    [[ "$lvl" == "CRIT" ]] && alert CRIT "CPU load high: $load1" || [[ "$lvl" == "WARN" ]] && alert WARN "CPU load elevated: $load1"
     sleep "$interval"
   done
 }
 
 _monitor_mem(){
-  local interval warn crit; interval=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' ')
+  local interval warn crit
+  interval=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' ')
   warn=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
   crit=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
-  [ -z "$interval" ] && interval=3
+  [[ -z "$interval" ]] && interval=3
   while true; do
     monitor_enabled memory || { sleep "$interval"; continue; }
-    local mem_total mem_free mem_avail mem_used pct
+    local mem_total mem_avail mem_used pct
     if grep -q MemAvailable /proc/meminfo 2>/dev/null; then
       mem_total=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
       mem_avail=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
       mem_used=$((mem_total-mem_avail))
       pct=$((mem_used*100/mem_total))
     else
-      # Fallback via free
       read -r _ mem_total _ < <(free -k | awk '/Mem:/ {print $2, $3, $4}')
       mem_used=$(free -k | awk '/Mem:/ {print $3}')
       pct=$((mem_used*100/mem_total))
     fi
     local lvl="OK"
-    [ "$pct" -ge "$crit" ] && lvl="CRIT" || { [ "$pct" -ge "$warn" ] && lvl="WARN"; }
+    [[ "$pct" -ge "$crit" ]] && lvl="CRIT" || [[ "$pct" -ge "$warn" ]] && lvl="WARN"
     local js
     js="{\"ts\":\"$(ns_now)\",\"used_pct\":$pct,\"warn\":$warn,\"crit\":$crit,\"level\":\"$lvl\"}"
     write_json "${NS_LOGS}/memory.json" "$js"
-    [ "$lvl" = "CRIT" ] && alert CRIT "Memory high: ${pct}%" || [ "$lvl" = "WARN" ] && alert WARN "Memory elevated: ${pct}%"
+    [[ "$lvl" == "CRIT" ]] && alert CRIT "Memory high: ${pct}%" || [[ "$lvl" == "WARN" ]] && alert WARN "Memory elevated: ${pct}%"
     sleep "$interval"
   done
 }
@@ -385,18 +344,18 @@ _monitor_disk(){
   warn=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
   crit=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
   mount=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /mount:/) print $2 }' "$NS_CONF" | tr -d '" ')
-  [ -z "$interval" ] && interval=10
-  [ -z "$mount" ] && mount="/"
+  [[ -z "$interval" ]] && interval=10
+  [[ -z "$mount" ]] && mount="/"
   while true; do
     monitor_enabled disk || { sleep "$interval"; continue; }
     local use
     use=$(df -P "$mount" | awk 'END {gsub("%","",$5); print $5+0}')
     local lvl="OK"
-    [ "$use" -ge "$crit" ] && lvl="CRIT" || { [ "$use" -ge "$warn" ] && lvl="WARN"; }
+    [[ "$use" -ge "$crit" ]] && lvl="CRIT" || [[ "$use" -ge "$warn" ]] && lvl="WARN"
     local js
     js="{\"ts\":\"$(ns_now)\",\"use_pct\":$use,\"warn\":$warn,\"crit\":$crit,\"mount\":\"$mount\",\"level\":\"$lvl\"}"
     write_json "${NS_LOGS}/disk.json" "$js"
-    [ "$lvl" = "CRIT" ] && alert CRIT "Disk $mount high: ${use}%" || [ "$lvl" = "WARN" ] && alert WARN "Disk $mount elevated: ${use}%"
+    [[ "$lvl" == "CRIT" ]] && alert CRIT "Disk $mount high: ${use}%" || [[ "$lvl" == "WARN" ]] && alert WARN "Disk $mount elevated: ${use}%"
     sleep "$interval"
   done
 }
@@ -407,68 +366,63 @@ _monitor_net(){
   iface=$(awk -F': ' '/network:/,/}/ { if($1 ~ /iface:/) print $2 }' "$NS_CONF" | tr -d '" ')
   pingh=$(awk -F': ' '/network:/,/}/ { if($1 ~ /ping_host/) print $2 }' "$NS_CONF" | tr -d '" ')
   warnloss=$(awk -F': ' '/network:/,/}/ { if($1 ~ /loss_warn/) print $2 }' "$NS_CONF" | tr -d ' ')
-  [ -z "$interval" ] && interval=5
-  [ -z "$pingh" ] && pingh="1.1.1.1"
+  [[ -z "$interval" ]] && interval=5
+  [[ -z "$pingh" ]] && pingh="1.1.1.1"
   while true; do
     monitor_enabled network || { sleep "$interval"; continue; }
     local ip pubip loss=0 avg=0
     if command -v ip >/dev/null 2>&1; then
       ip=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
-      [ -z "$ip" ] && ip=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1)
+      [[ -z "$ip" ]] && ip=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1)
     else
       ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -n1)
-      [ -z "$ip" ] && ip=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -n1)
+      [[ -z "$ip" ]] && ip=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -n1)
     fi
-    # Ping sample of 3
     if command -v ping >/dev/null 2>&1; then
       local out; out=$(ping -c 3 -w 3 "$pingh" 2>/dev/null || true)
       loss=$(echo "$out" | awk -F',' '/packet loss/ {gsub("%","",$3); gsub(" ","",$3); print $3+0}' 2>/dev/null || echo 0)
       avg=$(echo "$out" | awk -F'/' '/rtt/ {print $5}' 2>/dev/null || echo 0)
     fi
-    # Public IP (best-effort, only if available locally via toy endpoints)
     pubip=""
     for e in icanhazip.com ifconfig.me api.ipify.org; do
-      if command -v curl >/dev/null 2>&1; then pubip=$(curl -s --max-time 2 "$e" || true); fi
-      [ -n "$pubip" ] && break
+      pubip=$(curl -s --max-time 2 "$e" || true)
+      [[ -n "$pubip" ]] && break
     done
-    local lvl="OK"; [ "$loss" -ge "$warnloss" ] && lvl="WARN"
+    local lvl="OK"; [[ "$loss" -ge "$warnloss" ]] && lvl="WARN"
     local js
     js="{\"ts\":\"$(ns_now)\",\"ip\":\"${ip:-}\",\"public_ip\":\"${pubip:-}\",\"loss_pct\":${loss:-0},\"rtt_avg_ms\":${avg:-0},\"level\":\"$lvl\"}"
     write_json "${NS_LOGS}/network.json" "$js"
-    [ "$lvl" = "WARN" ] && alert WARN "Network loss ${loss}% to ${pingh}"
+    [[ "$lvl" == "WARN" ]] && alert WARN "Network loss ${loss}% to ${pingh}"
     sleep "$interval"
   done
 }
 
 _monitor_integrity(){
   local interval; interval=$(awk -F': ' '/integrity:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' ')
-  [ -z "$interval" ] && interval=60
+  [[ -z "$interval" ]] && interval=60
   local list
   list=$(awk -F'\- ' '/watch_paths:/{flag=1;next}/]/{flag=0}flag{print $2}' "$NS_CONF" 2>/dev/null || true)
   while true; do
     monitor_enabled integrity || { sleep "$interval"; continue; }
-    local report="{}"
     for p in $list; do
       p=$(echo "$p" | tr -d '"' | tr -d ' ')
-      [ -d "$p" ] || continue
+      [[ -d "$p" ]] || continue
       local sumfile="${NS_LOGS}/integrity.$(echo "$p" | tr '/' '_').sha"
-      if [ -f "$sumfile" ]; then
-        # Verify existing hashes
+      if [[ -f "$sumfile" ]]; then
         local changes=0
         while IFS= read -r line; do
           local have file
           have=$(echo "$line" | awk '{print $1}')
           file=$(echo "$line" | awk '{print $2}')
-          if [ -f "$file" ]; then
+          if [[ -f "$file" ]]; then
             local now
             now=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
-            [ "$now" != "$have" ] && changes=$((changes+1))
+            [[ "$now" != "$have" ]] && changes=$((changes+1))
           fi
         done <"$sumfile"
-        [ "$changes" -gt 0 ] && alert WARN "Integrity changes in $p: $changes files"
+        [[ "$changes" -gt 0 ]] && alert WARN "Integrity changes in $p: $changes files"
       fi
-      # Refresh sums (lightweight; for big paths, trim)
-      find "$p" -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | head -n 200 | xargs -r sha256sum >"$sumfile" 2>/dev/null || true
+      find "$p" -maxdepth 1 -type f -print0 2>/dev/null | head -zn 200 | xargs -0 sha256sum >"$sumfile" 2>/dev/null || true
     done
     write_json "${NS_LOGS}/integrity.json" "{\"ts\":\"$(ns_now)\"}"
     sleep "$interval"
@@ -489,13 +443,13 @@ start_monitors(){
 stop_monitors(){
   local any=0
   for p in cpu memory disk network integrity; do
-    if [ -f "${NS_PID}/${p}.pid" ]; then
+    if [[ -f "${NS_PID}/${p}.pid" ]]; then
       kill "$(cat "${NS_PID}/${p}.pid")" 2>/dev/null || true
       rm -f "${NS_PID}/${p}.pid"
       any=1
     fi
   done
-  [ "$any" -eq 1 ] && ns_ok "Monitors stopped" || true
+  [[ "$any" -eq 1 ]] && ns_ok "Monitors stopped"
 }
 
 # ------------------------------ PY WEB SERVER --------------------------------
@@ -563,9 +517,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(html.encode('utf-8'))
             return
         if parsed.path.startswith('/static/'):
-            # Serve static files under www
+            # Serve static files under www, but block .pem/.key/config.yaml
             p = os.path.join(NS_WWW, parsed.path[len('/static/'):])
-            if os.path.commonpath([NS_WWW, os.path.abspath(os.path.dirname(p))]) != NS_WWW:
+            if os.path.commonpath([NS_WWW, os.path.abspath(os.path.dirname(p))]) != NS_WWW or any(x in p for x in ['.pem', '.key', 'config.yaml']):
                 self._set_headers(404); self.wfile.write(b'{}'); return
             if os.path.exists(p) and os.path.isfile(p):
                 ctype = 'text/plain'
@@ -633,7 +587,6 @@ class Handler(SimpleHTTPRequestHandler):
                     self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception:
                     pass
-            # Call back the shell script for heavy operations (backup, version)
             self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
             if action in ('backup','version','restart_monitors'):
                 try:
@@ -646,7 +599,6 @@ class Handler(SimpleHTTPRequestHandler):
         self._set_headers(400); self.wfile.write(b'{"ok":false}')
 
 if __name__ == '__main__':
-    # Load port/host from config (primitive parse)
     host='127.0.0.1'; port=8765
     try:
         with open(CONFIG,'r',encoding='utf-8') as f:
@@ -675,12 +627,12 @@ write_dashboard(){
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NovaShield Terminal 2.0</title>
+  <title>NovaShield Terminal 2.1</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <header>
-    <h1>NovaShield Terminal <span class="ver">2.0</span></h1>
+    <h1>NovaShield Terminal <span class="ver">2.1</span></h1>
     <div class="actions">
       <button id="btn-refresh">Refresh</button>
       <button data-act="backup">Backup</button>
@@ -761,11 +713,9 @@ async function refresh(){
   const ul = document.getElementById('alerts');
   ul.innerHTML='';
   (j.alerts||[]).slice(-100).reverse().forEach(line=>{ const li=document.createElement('li'); li.textContent=line; ul.appendChild(li);});
-  // Color cards by level
   const levels = {cpu:j.cpu?.level, memory:j.memory?.level, disk:j.disk?.level, network:j.network?.level};
   const map = {OK:'ok', WARN:'warn', CRIT:'crit'};
   Object.entries(levels).forEach(([k,v])=>{ const el=document.getElementById('card-'+(k==='memory'?'mem':k.substr(0,3))); if(!el) return; el.classList.remove('ok','warn','crit'); if(map[v]) el.classList.add(map[v]);});
-  // Config
   const conf = await (await fetch('/api/config')).text();
   document.getElementById('config').textContent = conf;
 }
@@ -776,7 +726,7 @@ function post(action,target){
 
 document.getElementById('btn-refresh').onclick=refresh;
 Array.from(document.querySelectorAll('.toggle')).forEach(b=>{
-  b.onclick=async()=>{ const t=b.dataset.target; const x=await post('disable',t); if(!x.ok){} await post('enable',t); refresh(); };
+  b.onclick=async()=>{ const t=b.dataset.target; await post('disable',t); await post('enable',t); refresh(); };
 });
 Array.from(document.querySelectorAll('[data-act]')).forEach(b=>{
   b.onclick=async()=>{ const a=b.dataset.act; await post(a,''); setTimeout(refresh,1000); };
@@ -788,8 +738,7 @@ JS
 
 # ------------------------------ SERVICES SETUP -------------------------------
 setup_termux_service(){
-  # Requires termux-services
-  if ! command -v sv-enable >/dev/null 2>&1; then return 0; fi
+  if ! command -v sv-enable >/dev/null 2>&1; then ns_warn "termux-services not found"; return 0; fi
   local svcdir="${HOME}/.termux/services/novashield"
   mkdir -p "$svcdir"
   write_file "$svcdir/run" 700 <<RUN
@@ -801,7 +750,7 @@ RUN
 }
 
 setup_systemd_user(){
-  if ! command -v systemctl >/dev/null 2>&1; then return 0; fi
+  if ! command -v systemctl >/dev/null 2>&1; then ns_warn "systemd not available"; return 0; fi
   local udir="${HOME}/.config/systemd/user"; mkdir -p "$udir"
   write_file "$udir/novashield.service" 644 <<SERVICE
 [Unit]
@@ -831,7 +780,7 @@ start_web(){
 }
 
 stop_web(){
-  if [ -f "${NS_PID}/web.pid" ]; then
+  if [[ -f "${NS_PID}/web.pid" ]]; then
     kill "$(cat "${NS_PID}/web.pid")" 2>/dev/null || true
     rm -f "${NS_PID}/web.pid"
     ns_ok "Web server stopped"
@@ -899,7 +848,7 @@ menu(){
       4) status;;
       5) backup_snapshot;;
       6) version_snapshot;;
-      7) read -rp "Path to file/dir: " p; if [ -d "$p" ]; then enc_dir "$p" "$p.tar.gz.enc"; else enc_file "$p" "$p.enc"; fi;;
+      7) read -rp "Path to file/dir: " p; if [[ -d "$p" ]]; then enc_dir "$p" "$p.tar.gz.enc"; else enc_file "$p" "$p.enc"; fi;;
       8) read -rp "Path to .enc: " p; read -rp "Output path: " o; dec_file "$p" "$o";;
       9) break;;
       *) echo "?";;
@@ -908,7 +857,7 @@ menu(){
 }
 
 # ------------------------------- ARG PARSING ---------------------------------
-if [ $# -eq 0 ]; then usage; exit 0; fi
+if [[ $# -eq 0 ]]; then usage; exit 0; fi
 
 case "${1:-}" in
   --install) install_all;;
@@ -919,9 +868,9 @@ case "${1:-}" in
   --backup) backup_snapshot;;
   --version-snapshot) version_snapshot;;
   --encrypt)
-    shift; p="${1:-}"; [ -z "$p" ] && die "--encrypt <path>"; if [ -d "$p" ]; then enc_dir "$p" "$p.tar.gz.enc"; else enc_file "$p" "$p.enc"; fi;;
+    shift; p="${1:-}"; [[ -z "$p" ]] && die "--encrypt <path>"; if [[ -d "$p" ]]; then enc_dir "$p" "$p.tar.gz.enc"; else enc_file "$p" "$p.enc"; fi;;
   --decrypt)
-    shift; p="${1:-}"; [ -z "$p" ] && die "--decrypt <file.enc>"; read -rp "Output path: " o; dec_file "$p" "$o";;
+    shift; p="${1:-}"; [[ -z "$p" ]] && die "--decrypt <file.enc>"; read -rp "Output path: " o; dec_file "$p" "$o";;
   --web-start) start_web;;
   --web-stop) stop_web;;
   --menu) menu;;
