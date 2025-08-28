@@ -1959,6 +1959,29 @@ PY
   ns_ok "User '$user' added. Enable/confirm auth in config.yaml (security.auth_enabled: true)"
 }
 
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
+  if [ "$have_user" = "yes" ]; then return 0; fi
+  echo
+  ns_warn "No web users found but auth_enabled is true. Creating the first user."
+  add_user
+  echo
+  read -r -p "Enable 2FA for this user now? [y/N]: " yn
+  case "$yn" in [Yy]*) enable_2fa ;; esac
+}
+
 enable_2fa(){
   local user secret
   read -rp "Username to set 2FA: " user
@@ -1967,6 +1990,30 @@ enable_2fa(){
 import os,base64; print(base64.b32encode(os.urandom(10)).decode().strip('='))
 PY
 )
+
+# ADD: drop this right after enable_2fa() and before usage()
+ensure_auth_bootstrap(){
+  local enabled; enabled=$(awk -F': ' '/auth_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | tr 'A-Z' 'a-z')
+  [ "$enabled" = "true" ] || return 0
+  local have_user
+  have_user=$(python3 - "$NS_SESS_DB" <<'PY'
+import json,sys
+p=sys.argv[1]
+try: j=json.load(open(p))
+except: j={}
+ud=j.get('_userdb',{}) or {}
+print('yes' if len(ud)>0 else 'no')
+PY
+)
+  if [ "$have_user" = "yes" ]; then return 0; fi
+  echo
+  ns_warn "No web users found but auth_enabled is true. Creating the first user."
+  add_user
+  echo
+  read -r -p "Enable 2FA for this user now? [y/N]: " yn
+  case "$yn" in [Yy]*) enable_2fa ;; esac
+}
+
   echo "TOTP secret (Base32): $secret"
   echo "Add to your authenticator app (issuer: NovaShield, account: $user)."
   python3 - "$NS_SESS_DB" "$user" "$secret" <<'PY'
