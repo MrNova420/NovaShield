@@ -1,36 +1,18 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.0.1 — JARVIS Edition — All‑in‑One Installer & Runtime
+# NovaShield Terminal 3.0.2 — JARVIS Edition — All‑in‑One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
 # License : MIT
 # Platform: Termux (Android) + Linux (Debian/Ubuntu/Arch/Fedora) auto-detect
-#
-# Mission:
-# - Keep original NovaShield 2.0 code as the foundation, fully debugged.
-# - Deep security hardening, multi-layer monitors, alerts, error analytics.
-# - Supervisor + fallback auto-heal for monitors and web UI.
-# - Optional web dashboard authentication with session tokens.
-# - Notifications (email/Telegram/Discord) via built-in Python helper.
-# - Automation scheduler (cron-like) driven by config.yaml.
-# - File tools (encrypt/decrypt, backup/versioning) + File Manager API.
-# - AI "Jarvis"-inspired assistant panel (local rule-based responder).
-# - Simple webpage builder (static pages) with panel + CLI.
-# - Extensible plugins/panels; everything generated from this single script.
-#
-# Result:
-# - Single file you can commit to GitHub. Running it creates ~/.novashield/*
-# - Cross-platform. No external Python libs required.
 # ==============================================================================
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-# ---------------------------------- VERSION ----------------------------------
-NS_VERSION="3.0.1"
+NS_VERSION="3.0.2"
 
-# ------------------------------- GLOBAL PATHS ---------------------------------
 NS_HOME="${HOME}/.novashield"
 NS_BIN="${NS_HOME}/bin"
 NS_LOGS="${NS_HOME}/logs"
@@ -52,11 +34,9 @@ NS_CHATLOG="${NS_LOGS}/chat.log"
 NS_SCHED_STATE="${NS_CTRL}/scheduler.state"
 NS_SESS_DB="${NS_CTRL}/sessions.json"
 
-# ---------------------------- RUNTIME CONSTANTS ------------------------------
 NS_DEFAULT_PORT=8765
 NS_DEFAULT_HOST="127.0.0.1"
 
-# ------------------------------ SELF RESOLUTION ------------------------------
 NS_SELF="${BASH_SOURCE[0]}"
 if command -v realpath >/dev/null 2>&1; then
   NS_SELF="$(realpath "${NS_SELF}")" || true
@@ -64,10 +44,8 @@ elif command -v readlink >/dev/null 2>&1; then
   NS_SELF="$(readlink -f "${NS_SELF}" 2>/dev/null || echo "${NS_SELF}")"
 fi
 
-# ---------------------------------- COLORS -----------------------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# --------------------------------- LOGGING -----------------------------------
 ns_now() { date '+%Y-%m-%d %H:%M:%S'; }
 ns_log() { echo -e "$(ns_now) [INFO ] $*" | tee -a "${NS_HOME}/launcher.log" >&2; }
 ns_warn(){ echo -e "${YELLOW}$(ns_now) [WARN ] $*${NC}" | tee -a "${NS_HOME}/launcher.log" >&2; }
@@ -84,24 +62,19 @@ alert(){
 
 trap 'ns_err "Unexpected error at line $LINENO"; alert "ERROR" "Trap error at $LINENO"' ERR
 
-# -------------------------------- UTILITIES ----------------------------------
 die(){ ns_err "$*"; alert "CRIT" "$*"; exit 1; }
 require_cmd(){ command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 write_file(){ local path="$1"; local mode="$2"; shift 2; install -m "$mode" /dev/null "$path" 2>/dev/null || true; cat >"$path"; }
 append_file(){ local path="$1"; shift; cat >>"$path"; }
 slurp(){ [ -f "$1" ] && cat "$1" || true; }
-safe_json(){ printf '%s' "$1" | tr -d '\000'; } # crude sanitization
+is_int(){ [[ "$1" =~ ^[0-9]+$ ]]; }
+ensure_int(){ local v="$1" d="$2"; is_int "$v" && echo "$v" || echo "$d"; }
 
-# --------------------------- ENVIRONMENT DETECTION ---------------------------
 IS_TERMUX=0
 if uname -a | grep -iq termux || { [ -n "${PREFIX:-}" ] && echo "$PREFIX" | grep -q "/com.termux/"; }; then
   IS_TERMUX=1
 fi
 
-OS_FAMILY="linux"
-[ "$(uname -s)" = "Linux" ] || OS_FAMILY="other"
-
-# ------------------------------ PACKAGE INSTALL ------------------------------
 PKG_INSTALL(){
   if [ "$IS_TERMUX" -eq 1 ]; then
     pkg install -y "$@"
@@ -116,7 +89,6 @@ PKG_INSTALL(){
   fi
 }
 
-# ---------------------------- DIRECTORY LAYOUT -------------------------------
 ensure_dirs(){
   mkdir -p "$NS_BIN" "$NS_LOGS" "$NS_WWW" "$NS_MODULES" "$NS_PROJECTS" \
            "$NS_VERSIONS" "$NS_KEYS" "$NS_CTRL" "$NS_TMP" "$NS_PID" \
@@ -128,23 +100,18 @@ ensure_dirs(){
   echo "$NS_SELF" >"$NS_SELF_PATH_FILE"
 }
 
-# ------------------------------- DEFAULT CONF --------------------------------
 write_default_config(){
   if [ -f "$NS_CONF" ]; then return 0; fi
   ns_log "Writing default config to $NS_CONF"
   write_file "$NS_CONF" 600 <<'YAML'
-# NovaShield Terminal 3.0 — config.yaml
-version: "3.0.0"
+version: "3.0.2"
 http:
   host: 127.0.0.1
   port: 8765
-  # If true, bind 0.0.0.0 (LAN access). Use with caution.
   allow_lan: false
 
 security:
   auth_enabled: false
-  # Users for dashboard auth. Passwords are hex sha256 of "salt:password".
-  # Use CLI: ./novashield.sh --add-user
   users: []
   auth_salt: "change-this-salt"
   rate_limit_per_min: 60
@@ -196,7 +163,7 @@ notifications:
 
 updates:
   enabled: false
-  source: ""  # optional git URL or local path
+  source: ""
 
 sync:
   enabled: false
@@ -204,7 +171,6 @@ sync:
   remote: ""
 
 scheduler:
-  # Simple cron-like tasks. time: "HH:MM" daily, or every_n_min: 15
   tasks:
     - name: "daily-backup"
       action: "backup"
@@ -214,32 +180,30 @@ scheduler:
       time: "03:00"
 
 webgen:
-  # Default site output: ~/.novashield/site
   enabled: true
   site_name: "NovaShield Site"
   theme: "jarvis-dark"
 YAML
 }
 
-# -------------------------------- DEPENDENCIES -------------------------------
 install_dependencies(){
   ns_log "Checking dependencies..."
-  local need=(python3 openssl awk sed grep tar gzip df du ps top uname head tail cut tr sha256sum curl ping find xargs)
+  local need=(python3 awk sed grep tar gzip df du ps top uname head tail cut tr sha256sum curl ping find xargs)
   for c in "${need[@]}"; do
     if ! command -v "$c" >/dev/null 2>&1; then
       ns_warn "$c missing; attempting install"
-      case "$c" in
-        sha256sum) PKG_INSTALL coreutils || true;;
-        python3) PKG_INSTALL python python3 || true;;
-        openssl) PKG_INSTALL openssl || true;;
-        tar) PKG_INSTALL tar || true;;
-        gzip) PKG_INSTALL gzip || true;;
-        curl) PKG_INSTALL curl || true;;
-        ping) PKG_INSTALL iputils-ping inetutils-ping || true;;
-        *) PKG_INSTALL "$c" || true;;
-      esac
+      PKG_INSTALL "$c" || true
     fi
   done
+  # OpenSSL binary name on Termux is openssl-tool
+  if ! command -v openssl >/dev/null 2>&1; then
+    if [ "$IS_TERMUX" -eq 1 ]; then
+      ns_warn "Installing openssl-tool (Termux)"
+      PKG_INSTALL openssl-tool || true
+    else
+      PKG_INSTALL openssl || true
+    fi
+  fi
   if [ "$IS_TERMUX" -eq 1 ]; then
     if ! command -v sv-enable >/dev/null 2>&1; then
       ns_warn "Installing termux-services (optional)"
@@ -248,7 +212,6 @@ install_dependencies(){
   fi
 }
 
-# --------------------------------- KEY GEN -----------------------------------
 generate_keys(){
   if [ ! -f "${NS_KEYS}/private.pem" ] || [ ! -f "${NS_KEYS}/public.pem" ]; then
     ns_log "Generating RSA keypair"
@@ -266,59 +229,22 @@ generate_keys(){
   fi
 }
 
-# ------------------------------ ENCRYPTION UTIL ------------------------------
 aes_key_path(){ awk -F': ' '/aes_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' ; }
 enc_file(){ local in="$1"; local out="$2"; local key="${NS_HOME}/$(aes_key_path)"; openssl enc -aes-256-cbc -salt -pbkdf2 -in "$in" -out "$out" -pass file:"$key"; }
 dec_file(){ local in="$1"; local out="$2"; local key="${NS_HOME}/$(aes_key_path)"; openssl enc -d -aes-256-cbc -pbkdf2 -in "$in" -out "$out" -pass file:"$key"; }
 enc_dir(){ local dir="$1"; local out="$2"; local tmp="${NS_TMP}/tmp-$(date +%s).tar.gz"; tar -C "$dir" -czf "$tmp" . || tar -czf "$tmp" "$dir"; enc_file "$tmp" "$out"; rm -f "$tmp"; }
 dec_dir(){ local in="$1"; local outdir="$2"; local tmp="${NS_TMP}/tmp-$(date +%s).tar.gz"; dec_file "$in" "$tmp"; mkdir -p "$outdir"; tar -C "$outdir" -xzf "$tmp"; rm -f "$tmp"; }
 
-# ----------------------------- NOTIFICATION HELPER ---------------------------
 write_notify_py(){
   write_file "${NS_BIN}/notify.py" 700 <<'PY'
 #!/usr/bin/env python3
-import os, sys, json, smtplib, ssl, urllib.request
+import os, sys, json, smtplib, ssl, urllib.request, urllib.parse
 from email.mime.text import MIMEText
 
 NS_HOME = os.path.expanduser('~/.novashield')
 CONF = os.path.join(NS_HOME, 'config.yaml')
 
-def load_conf():
-  d = {}
-  try:
-    with open(CONF,'r',encoding='utf-8') as f:
-      for line in f:
-        if line.strip().startswith('#'): continue
-        if ':' in line:
-          k,v = line.split(':',1)
-          d[k.strip()] = v.strip()
-  except Exception:
-    pass
-  return d
-
-def get_yaml_block(prefix):
-  # naive YAML puller
-  lines = []
-  try:
-    with open(CONF,'r',encoding='utf-8') as f:
-      collect=False
-      indent=None
-      for raw in f:
-        if raw.strip().startswith(prefix+':'):
-          collect=True; indent=len(raw)-len(raw.lstrip()); lines.append(raw); continue
-        if collect:
-          if raw.strip()=='':
-            lines.append(raw); continue
-          cur_indent = len(raw)-len(raw.lstrip())
-          if cur_indent<=indent and not raw.strip().startswith('-'):
-            break
-          lines.append(raw)
-  except Exception:
-    pass
-  return ''.join(lines)
-
 def yaml_get(path, default=None):
-  # path like notifications.email.enabled
   try:
     with open(CONF,'r',encoding='utf-8') as f:
       tree = {}
@@ -326,29 +252,25 @@ def yaml_get(path, default=None):
       for line in f:
         if not line.strip() or line.strip().startswith('#'): continue
         indent = len(line)-len(line.lstrip())
-        keyval = line.strip()
-        while stack and indent <= stack[-1][0]:
-          stack.pop()
+        while stack and indent <= stack[-1][0]: stack.pop()
         parent = stack[-1][1] if stack else tree
-        if ':' in keyval:
-          k,v = keyval.split(':',1)
+        s=line.strip()
+        if ':' in s:
+          k,v = s.split(':',1)
           k=k.strip(); v=v.strip()
           if v=='':
-            parent[k] = {}
-            stack.append((indent, parent[k]))
+            parent[k]={}
+            stack.append((indent,parent[k]))
           else:
-            parent[k] = v.strip().strip('"')
-        elif keyval.startswith('- '):
-          k = keyval[2:].strip().strip('"')
-          parent.setdefault('_list', []).append(k)
-      # walk
-      cur = tree
-      for p in path.split('.'):
-        if isinstance(cur, dict) and p in cur:
-          cur = cur[p]
-        else:
-          return default
-      return cur
+            parent[k]=v.strip().strip('"')
+        elif s.startswith('- '):
+          k=s[2:].strip().strip('"')
+          parent.setdefault('_list',[]).append(k)
+    cur=tree
+    for p in path.split('.'):
+      if isinstance(cur,dict) and p in cur: cur=cur[p]
+      else: return default
+    return cur
   except Exception:
     return default
 
@@ -376,7 +298,7 @@ def send_email(subject, body):
       with smtplib.SMTP(host, port, timeout=10) as server:
         server.login(user, pwd)
         server.sendmail(user, [t.strip() for t in to if t.strip()], msg.as_string())
-  except Exception as e:
+  except Exception:
     pass
 
 def send_telegram(body):
@@ -385,10 +307,8 @@ def send_telegram(body):
   chat  = yaml_get('notifications.telegram.chat_id','')
   if not (token and chat): return
   data = urllib.parse.urlencode({'chat_id':chat,'text':body}).encode('utf-8')
-  try:
-    urllib.request.urlopen(urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage', data=data), timeout=5)
-  except Exception:
-    pass
+  try: urllib.request.urlopen(urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage', data=data), timeout=5)
+  except Exception: pass
 
 def send_discord(body):
   if not yaml_get('notifications.discord.enabled') == 'true': return
@@ -396,17 +316,14 @@ def send_discord(body):
   if not hook: return
   payload = json.dumps({'content': body}).encode('utf-8')
   req = urllib.request.Request(hook, data=payload, headers={'Content-Type':'application/json'})
-  try:
-    urllib.request.urlopen(req, timeout=5)
-  except Exception:
-    pass
+  try: urllib.request.urlopen(req, timeout=5)
+  except Exception: pass
 
 if __name__ == '__main__':
-  # argv: level subject body
   level = sys.argv[1] if len(sys.argv)>1 else 'INFO'
   subject = sys.argv[2] if len(sys.argv)>2 else 'NovaShield Notification'
   body = sys.argv[3] if len(sys.argv)>3 else ''
-  allow = (yaml_get('logging.notify_levels','["CRIT","WARN"]') or '').upper()
+  allow = (yaml_get('logging.notify_levels','["CRIT","WARN","ERROR"]') or '').upper()
   if (level or '').upper() in allow:
     send_email(subject, body)
     send_telegram(f'{subject}\n{body}')
@@ -415,21 +332,17 @@ PY
 }
 
 notify_dispatch(){
-  # Decide whether to notify based on config
   local enabled; enabled=$(awk -F': ' '/alerts_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ')
-  local sinks; sinks=$(awk -F'\[|\]' '/alert_sink:/ {print $2}' "$NS_CONF" | tr -d ' "' | tr ',' ' ')
+  local sinks; sinks=$(awk -F'[][]' '/alert_sink:/ {print $2}' "$NS_CONF" | tr -d ' "' | tr ',' ' ')
   [ "$enabled" = "true" ] || return 0
   for s in $sinks; do
     case "$s" in
-      notify)
-        python3 "${NS_BIN}/notify.py" "$1" "NovaShield [$1]" "$2" >/dev/null 2>&1 || true
-        ;;
+      notify) python3 "${NS_BIN}/notify.py" "$1" "NovaShield [$1]" "$2" >/dev/null 2>&1 || true ;;
       *) : ;;
     esac
   done
 }
 
-# ------------------------------- BACKUPS/VERS --------------------------------
 backup_snapshot(){
   local stamp; stamp=$(date '+%Y%m%d-%H%M%S')
   local tmp_tar="${NS_TMP}/backup-${stamp}.tar.gz"
@@ -473,19 +386,21 @@ version_snapshot(){
   cp -a "$NS_ALERTS" "$vdir/alerts.log" 2>/dev/null || true
 }
 
-# ------------------------------- MONITORS ------------------------------------
 monitor_enabled(){ local name="$1"; [ -f "${NS_CTRL}/${name}.disabled" ] && return 1 || return 0; }
 write_json(){ local path="$1"; shift; printf '%s' "$*" >"$path"; }
 
 _monitor_cpu(){
-  local interval warn crit; interval=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=3
+  set +e
+  local interval warn crit
+  interval=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 3)
   warn=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /warn_load/) print $2 }' "$NS_CONF" | tr -d ' ')
   crit=$(awk -F': ' '/cpu:/,/}/ { if($1 ~ /crit_load/) print $2 }' "$NS_CONF" | tr -d ' ')
+  [ -z "$warn" ] && warn=2.00; [ -z "$crit" ] && crit=4.00
   while true; do
     monitor_enabled cpu || { sleep "$interval"; continue; }
     local load1; load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
-    local lvl="OK"; awk -v l="$load1" -v w="$warn" -v c="$crit" 'BEGIN{lvl="OK"; if(l>=c){print "CRIT"} else if(l>=w){print "WARN"} else {print "OK"}}' >/tmp/ns-cpu-lvl
-    lvl=$(cat /tmp/ns-cpu-lvl)
+    local lvl
+    lvl=$(awk -v l="$load1" -v w="$warn" -v c="$crit" 'BEGIN{ if(l>=c){print "CRIT"} else if(l>=w){print "WARN"} else {print "OK"} }')
     write_json "${NS_LOGS}/cpu.json" "{\"ts\":\"$(ns_now)\",\"load1\":$load1,\"warn\":$warn,\"crit\":$crit,\"level\":\"$lvl\"}"
     [ "$lvl" = "CRIT" ] && alert CRIT "CPU load high: $load1" || { [ "$lvl" = "WARN" ] && alert WARN "CPU load elevated: $load1"; }
     sleep "$interval"
@@ -493,9 +408,11 @@ _monitor_cpu(){
 }
 
 _monitor_mem(){
-  local interval warn crit; interval=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=3
-  warn=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
-  crit=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
+  set +e
+  local interval warn crit
+  interval=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 3)
+  warn=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' '); warn=$(ensure_int "${warn:-}" 80)
+  crit=$(awk -F': ' '/memory:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' '); crit=$(ensure_int "${crit:-}" 92)
   while true; do
     monitor_enabled memory || { sleep "$interval"; continue; }
     local mem_total mem_avail mem_used pct
@@ -515,10 +432,11 @@ _monitor_mem(){
 }
 
 _monitor_disk(){
+  set +e
   local interval warn crit mount
-  interval=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=10
-  warn=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
-  crit=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' ')
+  interval=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 10)
+  warn=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /warn_pct/) print $2 }' "$NS_CONF" | tr -d ' '); warn=$(ensure_int "${warn:-}" 85)
+  crit=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /crit_pct/) print $2 }' "$NS_CONF" | tr -d ' '); crit=$(ensure_int "${crit:-}" 95)
   mount=$(awk -F': ' '/disk:/,/}/ { if($1 ~ /mount:/) print $2 }' "$NS_CONF" | tr -d '" ')
   [ -z "$mount" ] && mount="/"
   while true; do
@@ -532,18 +450,19 @@ _monitor_disk(){
 }
 
 _monitor_net(){
+  set +e
   local interval iface pingh warnloss
-  interval=$(awk -F': ' '/network:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=5
+  interval=$(awk -F': ' '/network:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 5)
   iface=$(awk -F': ' '/network:/,/}/ { if($1 ~ /iface:/) print $2 }' "$NS_CONF" | tr -d '" ')
   pingh=$(awk -F': ' '/network:/,/}/ { if($1 ~ /ping_host/) print $2 }' "$NS_CONF" | tr -d '" '); [ -z "$pingh" ] && pingh="1.1.1.1"
-  warnloss=$(awk -F': ' '/network:/,/}/ { if($1 ~ /loss_warn/) print $2 }' "$NS_CONF" | tr -d ' ')
+  warnloss=$(awk -F': ' '/network:/,/}/ { if($1 ~ /loss_warn/) print $2 }' "$NS_CONF" | tr -d ' '); warnloss=$(ensure_int "${warnloss:-}" 20)
   while true; do
     monitor_enabled network || { sleep "$interval"; continue; }
     local ip pubip loss=0 avg=0
     if command -v ip >/dev/null 2>&1; then
       ip=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
       [ -z "$ip" ] && ip=$(ip -o -4 addr show | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1)
-    else
+    elif command -v ifconfig >/dev/null 2>&1; then
       ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -n1)
       [ -z "$ip" ] && ip=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127\.' | head -n1)
     fi
@@ -557,7 +476,7 @@ _monitor_net(){
       if command -v curl >/dev/null 2>&1; then pubip=$(curl -s --max-time 2 "$e" || true); fi
       [ -n "$pubip" ] && break
     done
-    local lvl="OK"; [ "${loss:-0}" -ge "${warnloss:-1000}" ] && lvl="WARN"
+    local lvl="OK"; [ "${loss:-0}" -ge "${warnloss:-999}" ] && lvl="WARN"
     write_json "${NS_LOGS}/network.json" "{\"ts\":\"$(ns_now)\",\"ip\":\"${ip:-}\",\"public_ip\":\"${pubip:-}\",\"loss_pct\":${loss:-0},\"rtt_avg_ms\":${avg:-0},\"level\":\"$lvl\"}"
     [ "$lvl" = "WARN" ] && alert WARN "Network loss ${loss}% to ${pingh}"
     sleep "$interval"
@@ -565,8 +484,9 @@ _monitor_net(){
 }
 
 _monitor_integrity(){
-  local interval; interval=$(awk -F': ' '/integrity:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=60
-  local list; list=$(awk -F'\- ' '/watch_paths:/{flag=1;next}/]/{flag=0}flag{print $2}' "$NS_CONF" 2>/dev/null || true)
+  set +e
+  local interval; interval=$(awk -F': ' '/integrity:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 60)
+  local list; list=$(awk -F'- ' '/watch_paths:/{flag=1;next}/]/{flag=0}flag{print $2}' "$NS_CONF" 2>/dev/null || true)
   while true; do
     monitor_enabled integrity || { sleep "$interval"; continue; }
     for p in $list; do
@@ -592,11 +512,12 @@ _monitor_integrity(){
 }
 
 _monitor_process(){
-  local interval suspicious; interval=$(awk -F': ' '/process:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=10
-  suspicious=$(awk -F'\[|\]' '/process:/,/\}/ { if($0 ~ /suspicious:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '\n')
+  set +e
+  local interval suspicious; interval=$(awk -F': ' '/process:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 10)
+  suspicious=$(awk -F'[][]' '/process:/,/\}/ { if($0 ~ /suspicious:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '\n')
   while true; do
     monitor_enabled process || { sleep "$interval"; continue; }
-    local procs; procs=$(ps aux || ps -ef)
+    local procs; procs=$(ps aux 2>/dev/null || ps -ef 2>/dev/null || true)
     for s in $suspicious; do
       [ -z "$s" ] && continue
       if echo "$procs" | grep -Eiq "[[:space:]]$s[[:space:]]|$s$|/$s"; then
@@ -609,28 +530,37 @@ _monitor_process(){
 }
 
 _monitor_userlogins(){
-  local interval; interval=$(awk -F': ' '/userlogins:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=30
-  local prev=""; while true; do
+  set +e
+  local interval; interval=$(awk -F': ' '/userlogins:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 30)
+  local prev_hash=""
+  while true; do
     monitor_enabled userlogins || { sleep "$interval"; continue; }
     local users; users=$(who 2>/dev/null || true)
-    if [ "$users" != "$prev" ] && [ -n "$prev" ]; then
-      alert INFO "User sessions changed: $(echo "$users" | tr '\n' '; ')" || true
+    local cur_hash; cur_hash=$(printf '%s' "$users" | sha256sum | awk '{print $1}')
+    if [ -n "$prev_hash" ] && [ "$cur_hash" != "$prev_hash" ]; then
+      alert INFO "User sessions changed: $(echo "$users" | tr '\n' '; ')"
     fi
-    prev="$users"
-    write_json "${NS_LOGS}/user.json" "{\"ts\":\"$(ns_now)\",\"who\":$(printf '%s' "$(echo "$users" | sed 's/\"/\\\"/g' | awk '{printf \"%s\\\\n\",$0}')" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')}"
+    prev_hash="$cur_hash"
+    local users_json; users_json=$(printf '%s' "$users" | python3 - <<'PY'
+import sys, json
+print(json.dumps(sys.stdin.read()))
+PY
+)
+    write_json "${NS_LOGS}/user.json" "{\"ts\":\"$(ns_now)\",\"who\":${users_json:-\"\"}}"
     sleep "$interval"
   done
 }
 
 _monitor_services(){
-  local interval targets; interval=$(awk -F': ' '/services:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=20
-  targets=$(awk -F'\[|\]' '/services:/,/\}/ { if($0 ~ /targets:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '\n')
+  set +e
+  local interval targets; interval=$(awk -F': ' '/services:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 20)
+  targets=$(awk -F'[][]' '/services:/,/\}/ { if($0 ~ /targets:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '\n')
   while true; do
     monitor_enabled services || { sleep "$interval"; continue; }
     for svc in $targets; do
       [ -z "$svc" ] && continue
       if command -v systemctl >/dev/null 2>&1; then
-        if ! systemctl is-active --quiet "$svc" 2>/dev/null; then alert CRIT "Service $svc is not active!"; fi
+        systemctl is-active --quiet "$svc" 2>/dev/null || alert CRIT "Service $svc is not active!"
       else
         pgrep -f "$svc" >/dev/null 2>&1 || alert WARN "Service process not found: $svc"
       fi
@@ -641,13 +571,12 @@ _monitor_services(){
 }
 
 _monitor_logs(){
-  local interval; interval=$(awk -F': ' '/logs:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=15
-  local files patterns; files=$(awk -F'\[|\]' '/logs:/,/\}/ { if($0 ~ /files:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' ' ')
-  patterns=$(awk -F'\[|\]' '/logs:/,/\}/ { if($0 ~ /patterns:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '|')
+  set +e
+  local interval; interval=$(awk -F': ' '/logs:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 15)
+  local files patterns; files=$(awk -F'[][]' '/logs:/,/\}/ { if($0 ~ /files:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' ' ')
+  patterns=$(awk -F'[][]' '/logs:/,/\}/ { if($0 ~ /patterns:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '|')
   [ -z "$patterns" ] && patterns="error|failed|denied|segfault"
-  # portable tailing without associative arrays (write last-size state per file)
-  local state="${NS_CTRL}/logwatch.state"
-  touch "$state" || true
+  local state="${NS_CTRL}/logwatch.state"; touch "$state" || true
   while true; do
     monitor_enabled logs || { sleep "$interval"; continue; }
     for f in $files; do
@@ -661,7 +590,6 @@ _monitor_logs(){
           alert WARN "Log anomaly in $(basename "$f"): $line"
         done
       fi
-      # update state
       if grep -q "^$f " "$state" 2>/dev/null; then
         sed -i "s|^$f .*|$f $size|" "$state" 2>/dev/null || true
       else
@@ -673,14 +601,14 @@ _monitor_logs(){
   done
 }
 
-# Supervisor: auto-heal monitors and web server
 _supervisor(){
+  set +e
   local interval=10
   while true; do
     for p in cpu memory disk network integrity process userlogins services logs; do
       if [ -f "${NS_PID}/${p}.pid" ]; then
         local pid; pid=$(cat "${NS_PID}/${p}.pid" 2>/dev/null || echo 0)
-        if ! kill -0 "$pid" 2>/dev/null; then
+        kill -0 "$pid" 2>/dev/null || {
           alert ERROR "Monitor $p crashed. Restarting."
           case "$p" in
             cpu) _monitor_cpu & echo $! >"${NS_PID}/${p}.pid" ;;
@@ -693,22 +621,20 @@ _supervisor(){
             services) _monitor_services & echo $! >"${NS_PID}/${p}.pid" ;;
             logs) _monitor_logs & echo $! >"${NS_PID}/${p}.pid" ;;
           esac
-        fi
+        }
       fi
     done
     if [ -f "${NS_PID}/web.pid" ]; then
       local wpid; wpid=$(cat "${NS_PID}/web.pid" 2>/dev/null || echo 0)
-      if ! kill -0 "$wpid" 2>/dev/null; then
-        alert ERROR "Web server crashed. Restarting."; start_web || true
-      fi
+      kill -0 "$wpid" 2>/dev/null || { alert ERROR "Web server crashed. Restarting."; start_web || true; }
     fi
     sleep "$interval"
   done
 }
 
-# Scheduler monitor (cron-like)
 _monitor_scheduler(){
-  local interval; interval=$(awk -F': ' '/scheduler:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); [ -z "$interval" ] && interval=30
+  set +e
+  local interval; interval=$(awk -F': ' '/scheduler:/,/}/ { if($1 ~ /interval_sec/) print $2 }' "$NS_CONF" | tr -d ' '); interval=$(ensure_int "${interval:-}" 30)
   : >"$NS_SCHED_STATE" || true
   while true; do
     monitor_enabled scheduler || { sleep "$interval"; continue; }
@@ -751,13 +677,7 @@ scheduler_run_action(){
   esac
 }
 
-# Robust spawner
-_spawn_monitor(){
-  # _spawn_monitor name function_name
-  local name="$1"; shift
-  "$@" & local pid=$!
-  echo "$pid" > "${NS_PID}/${name}.pid"
-}
+_spawn_monitor(){ local name="$1"; shift; "$@" & echo $! > "${NS_PID}/${name}.pid"; }
 
 start_monitors(){
   ns_log "Starting monitors..."
@@ -788,11 +708,10 @@ stop_monitors(){
   [ "$any" -eq 1 ] && ns_ok "Monitors stopped" || true
 }
 
-# ------------------------------ PY WEB SERVER --------------------------------
 write_server_py(){
   write_file "${NS_WWW}/server.py" 700 <<'PY'
 #!/usr/bin/env python3
-import json, os, sys, time, hashlib, http.cookies
+import json, os, sys, time, hashlib, http.cookies, socket
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
@@ -810,8 +729,7 @@ CHATLOG = os.path.join(NS_LOGS, 'chat.log')
 SITE_DIR = os.path.join(NS_HOME, 'site')
 
 def read_text(path, default=''):
-    try:
-        with open(path, 'r', encoding='utf-8') as f: return f.read()
+    try: return open(path,'r',encoding='utf-8').read()
     except Exception: return default
 
 def write_text(path, data):
@@ -819,49 +737,43 @@ def write_text(path, data):
     with open(path,'w',encoding='utf-8') as f: f.write(data)
 
 def read_json(path, default=None):
-    try:
-        with open(path, 'r', encoding='utf-8') as f: return json.loads(f.read())
+    try: return json.loads(read_text(path,''))
     except Exception: return default
 
 def write_json(path, obj):
     Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
     with open(path,'w',encoding='utf-8') as f: f.write(json.dumps(obj))
 
-def yaml_get(path, default=None):
+def yaml_scalar(key):
+    # very simple "key: value" parser stripping comments
     try:
-        with open(CONFIG,'r',encoding='utf-8') as f:
-            tree = {}
-            stack=[(-1,tree)]
-            for line in f:
-                if not line.strip() or line.strip().startswith('#'): continue
-                indent = len(line)-len(line.lstrip())
-                while stack and indent <= stack[-1][0]: stack.pop()
-                parent = stack[-1][1] if stack else tree
-                s=line.strip()
-                if ':' in s:
-                    k,v = s.split(':',1)
-                    k=k.strip(); v=v.strip()
-                    if v=='':
-                        parent[k]={}
-                        stack.append((indent,parent[k]))
-                    else:
-                        parent[k]=v.strip().strip('"')
-                elif s.startswith('- '):
-                    k=s[2:].strip().strip('"')
-                    parent.setdefault('_list',[]).append(k)
-        cur=tree
-        for p in path.split('.'):
-            if isinstance(cur,dict) and p in cur: cur=cur[p]
-            else: return default
-        return cur
+        for line in open(CONFIG,'r',encoding='utf-8'):
+            s=line.split('#',1)[0].strip()
+            if not s: continue
+            if s.startswith(key+':'):
+                return s.split(':',1)[1].strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+def yaml_flag(path, default=False):
+    v = None
+    try:
+        for line in open(CONFIG,'r',encoding='utf-8'):
+            s=line.split('#',1)[0].strip()
+            if s.startswith(path+':'):
+                v = s.split(':',1)[1].strip().lower()
+                break
     except Exception:
         return default
+    return (v=='true')
 
 def auth_enabled():
-    return (yaml_get('security.auth_enabled','false')=='true')
+    return yaml_flag('security.auth_enabled', False)
 
 def auth_salt():
-    return yaml_get('security.auth_salt','changeme')
+    v = yaml_scalar('auth_salt') or 'changeme'
+    return v
 
 def users_list():
     db = read_json(SESSIONS, {}) or {}
@@ -922,23 +834,19 @@ def ai_reply(prompt):
         'net': read_json(os.path.join(NS_LOGS,'network.json'),{}),
     }
     if 'status' in prompt_low or 'health' in prompt_low:
-        return f"[{now}] System status: CPU load {status['cpu'].get('load1','?')}, Mem {status['mem'].get('used_pct','?')}%, Disk {status['disk'].get('use_pct','?')}% used, Net loss {status['net'].get('loss_pct','?')}%."
+        return f"[{now}] CPU {status['cpu'].get('load1','?')} | Mem {status['mem'].get('used_pct','?')}% | Disk {status['disk'].get('use_pct','?')}% | Loss {status['net'].get('loss_pct','?')}%."
     if 'backup' in prompt_low:
         os.system(f'"{read_text(SELF_PATH_FILE).strip()}" --backup >/dev/null 2>&1 &')
-        return "Acknowledged. Initiated a backup snapshot. I will notify if anything fails."
+        return "Acknowledged. Snapshot backup started."
     if 'version' in prompt_low or 'snapshot' in prompt_low:
         os.system(f'"{read_text(SELF_PATH_FILE).strip()}" --version-snapshot >/dev/null 2>&1 &')
-        return "Understood. Creating a version snapshot right away."
-    if 'restart monitor' in prompt_low or 'restart monitors' in prompt_low:
+        return "Version snapshot underway."
+    if 'restart monitor' in prompt_low:
         os.system(f'"{read_text(SELF_PATH_FILE).strip()}" --restart-monitors >/dev/null 2>&1 &')
-        return "Reinitializing all monitors. Stand by."
+        return "Restarting monitors."
     if 'ip' in prompt_low:
-        return f"Your internal IP appears to be {status['net'].get('ip','?')} and public IP {status['net'].get('public_ip','?')}."
-    if 'help' in prompt_low or 'what can you do' in prompt_low:
-        return "I can report status, trigger backup/version, restart monitors, and answer about CPU/memory/disk/network. Ask me: 'status', 'backup', 'version', 'IP', or 'open config'."
-    if 'open config' in prompt_low:
-        return "Open the Config panel. You can edit ~/.novashield/config.yaml directly."
-    return f"I hear you: '{prompt}'. I can perform status, backup, version snapshot, and restart monitors. Say 'help' for options."
+        return f"Internal IP {status['net'].get('ip','?')} | Public {status['net'].get('public_ip','?')}."
+    return f"I can do status, backup, version snapshot, and restart monitors. You said: {prompt}"
 
 class Handler(SimpleHTTPRequestHandler):
     def _set_headers(self, status=200, ctype='application/json', extra_headers=None):
@@ -946,30 +854,25 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Content-Type', ctype)
         self.send_header('Cache-Control', 'no-store')
         if extra_headers:
-            for k,v in extra_headers.items(): self.send_header(k, v)
+            for k,v in (extra_headers or {}).items(): self.send_header(k, v)
         self.end_headers()
-
-    def do_OPTIONS(self):
-        self._set_headers(200, 'text/plain', {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS'})
 
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == '/':
             self._set_headers(200, 'text/html; charset=utf-8')
             html = read_text(INDEX, '<h1>NovaShield</h1>')
-            self.wfile.write(html.encode('utf-8'))
-            return
+            self.wfile.write(html.encode('utf-8')); return
         if parsed.path.startswith('/static/'):
             p = os.path.join(NS_WWW, parsed.path[len('/static/'):])
             if not os.path.abspath(p).startswith(NS_WWW): self._set_headers(404); self.wfile.write(b'{}'); return
             if os.path.exists(p) and os.path.isfile(p):
-                ctype = 'text/plain'
+                ctype='text/plain'
                 if p.endswith('.js'): ctype='application/javascript'
                 if p.endswith('.css'): ctype='text/css'
                 if p.endswith('.html'): ctype='text/html; charset=utf-8'
                 self._set_headers(200, ctype); self.wfile.write(read_text(p).encode('utf-8')); return
             self._set_headers(404); self.wfile.write(b'{}'); return
-
         if parsed.path == '/api/status':
             if not require_auth(self): return
             data = {
@@ -989,18 +892,15 @@ class Handler(SimpleHTTPRequestHandler):
                 'version': read_text(os.path.join(NS_HOME, 'version.txt'), 'unknown'),
             }
             self._set_headers(200); self.wfile.write(json.dumps(data).encode('utf-8')); return
-
         if parsed.path == '/api/config':
             if not require_auth(self): return
             self._set_headers(200, 'text/plain; charset=utf-8'); self.wfile.write(read_text(CONFIG, '').encode('utf-8')); return
-
         if parsed.path == '/api/logs':
             if not require_auth(self): return
             q = parse_qs(parsed.query); name = (q.get('name', ['launcher.log'])[0]).replace('..','')
             p = os.path.join(NS_HOME, name); 
             if not os.path.exists(p): p = os.path.join(NS_LOGS, name)
             self._set_headers(200); self.wfile.write(json.dumps({'name': name, 'lines': last_lines(p, 200)}).encode('utf-8')); return
-
         if parsed.path == '/api/fs':
             if not require_auth(self): return
             q = parse_qs(parsed.query); d = q.get('dir',[''])[0]
@@ -1015,11 +915,9 @@ class Handler(SimpleHTTPRequestHandler):
                     out.append({'name':entry.name,'is_dir':entry.is_dir(),'size':(entry.stat().st_size if entry.is_file() else 0)})
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'dir':d,'entries':out}).encode('utf-8')); return
-
         if parsed.path == '/site':
             index = os.path.join(SITE_DIR,'index.html')
             self._set_headers(200,'text/html; charset=utf-8'); self.wfile.write(read_text(index,'<h1>No site yet</h1>').encode('utf-8')); return
-
         self._set_headers(404); self.wfile.write(b'{"error":"not found"}')
 
     def do_POST(self):
@@ -1027,16 +925,13 @@ class Handler(SimpleHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else ''
         if parsed.path == '/api/login':
-            try:
-                data = json.loads(body or '{}'); user=data.get('user'); pwd=data.get('pass')
-            except Exception:
-                data={}; user=''; pwd=''
+            try: data = json.loads(body or '{}'); user=data.get('user'); pwd=data.get('pass')
+            except Exception: data={}; user=''; pwd=''
             if auth_enabled() and check_login(user, pwd):
                 tok = new_session(user)
                 self._set_headers(200, 'application/json', {'Set-Cookie': f'NSSESS={tok}; Path=/; HttpOnly'})
                 self.wfile.write(b'{"ok":true}'); return
             self._set_headers(401); self.wfile.write(b'{"ok":false}'); return
-
         if parsed.path == '/api/control':
             if not require_auth(self): return
             try: data = json.loads(body or '{}')
@@ -1044,14 +939,12 @@ class Handler(SimpleHTTPRequestHandler):
             action = data.get('action',''); target = data.get('target','')
             flag = os.path.join(NS_CTRL, f'{target}.disabled')
             if action == 'enable' and target:
-                try:
+                try: 
                     if os.path.exists(flag): os.remove(flag)
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             if action == 'disable' and target:
-                try:
-                    open(flag,'w').close()
-                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
+                try: open(flag,'w').close(); self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
             if action in ('backup','version','restart_monitors'):
@@ -1062,19 +955,15 @@ class Handler(SimpleHTTPRequestHandler):
                     self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
                 except Exception: pass
             self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
-
         if parsed.path == '/api/chat':
             if not require_auth(self): return
             try: data = json.loads(body or '{}')
             except Exception: data={}
             prompt = data.get('prompt','')
             reply = ai_reply(prompt)
-            log_line = f'{time.strftime("%Y-%m-%d %H:%M:%S")} Q:{prompt} A:{reply}\n'
-            try: 
-                with open(CHATLOG,'a',encoding='utf-8') as f: f.write(log_line)
+            try: open(CHATLOG,'a',encoding='utf-8').write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} Q:{prompt} A:{reply}\n')
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'reply':reply}).encode('utf-8')); return
-
         if parsed.path == '/api/webgen':
             if not require_auth(self): return
             try: data = json.loads(body or '{}')
@@ -1088,7 +977,6 @@ class Handler(SimpleHTTPRequestHandler):
             links = '\n'.join([f'<li><a href="/site/{p}">{p}</a></li>' for p in pages if p!='index.html'])
             write_text(os.path.join(SITE_DIR,'index.html'), f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Site</title></head><body><h1>Site</h1><ul>{links}</ul></body></html>')
             self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'page':f'/site/{slug}.html'}).encode('utf-8')); return
-
         if parsed.path.startswith('/site/'):
             p = parsed.path[len('/site/'):]
             full = os.path.join(SITE_DIR, p)
@@ -1096,26 +984,46 @@ class Handler(SimpleHTTPRequestHandler):
             if os.path.exists(full):
                 self._set_headers(200, 'text/html; charset=utf-8'); self.wfile.write(read_text(full).encode('utf-8')); return
             self._set_headers(404); self.wfile.write(b'{}'); return
-
         self._set_headers(400); self.wfile.write(b'{"ok":false}')
 
-if __name__ == '__main__':
-    host='127.0.0.1'; port=8765
+def pick_host_port():
+    host = '127.0.0.1'; port = 8765
     try:
-        with open(CONFIG,'r',encoding='utf-8') as f:
-            t=f.read()
-            for line in t.splitlines():
-                if 'host:' in line and 'http:' not in line: host=line.split(':',1)[1].strip()
-                if 'port:' in line and 'http:' not in line: 
-                    try: port=int(line.split(':',1)[1].strip())
-                    except: port=8765
-                if 'allow_lan:' in line and 'true' in line: host='0.0.0.0'
+        h = None; p = None
+        for line in open(CONFIG,'r',encoding='utf-8'):
+            s=line.split('#',1)[0].strip()
+            if not s: continue
+            if s.startswith('host:') and 'http:' not in s:
+                h = s.split(':',1)[1].strip().strip('"').strip("'")
+            if s.startswith('port:') and 'http:' not in s:
+                try: p = int(s.split(':',1)[1].strip())
+                except: pass
+            if s.startswith('allow_lan:') and 'true' in s:
+                h = '0.0.0.0'
+        if h: host = h
+        if p: port = p
     except Exception:
         pass
+    # sanitize host: if invalid, fallback to 127.0.0.1
+    try:
+        socket.getaddrinfo(host, port)
+    except Exception:
+        host = '127.0.0.1'
+    return host, port
+
+if __name__ == '__main__':
+    host, port = pick_host_port()
     os.chdir(NS_WWW)
-    httpd = HTTPServer((host, port), Handler)
-    print(f"NovaShield Web Server on http://{host}:{port}")
-    httpd.serve_forever()
+    # Try bind host; fallback chain
+    for h in (host, '127.0.0.1', '0.0.0.0'):
+        try:
+            httpd = HTTPServer((h, port), Handler)
+            print(f"NovaShield Web Server on http://{h}:{port}")
+            httpd.serve_forever()
+        except Exception as e:
+            print(f"Bind failed on {h}:{port}: {e}", file=sys.stderr)
+            time.sleep(0.5)
+            continue
 PY
   chmod 700 "${NS_WWW}/server.py"
 }
@@ -1344,7 +1252,6 @@ refresh(); setInterval(refresh, 5000);
 JS
 }
 
-# ------------------------------ SERVICES SETUP -------------------------------
 setup_termux_service(){
   if ! command -v sv-enable >/dev/null 2>&1; then return 0; fi
   local svcdir="${HOME}/.termux/services/novashield"
@@ -1353,7 +1260,8 @@ setup_termux_service(){
 #!/data/data/com.termux/files/usr/bin/sh
 exec python3 "${NS_WWW}/server.py" >>"${NS_HOME}/web.log" 2>&1
 RUN
-  sv-enable novashield || true
+  # Try enable; ignore failure (service manager may not be ready yet)
+  sv-enable novashield || ns_warn "termux-services enable failed (non-blocking)"
   ns_ok "Termux service installed: sv-enable novashield"
 }
 
@@ -1378,7 +1286,6 @@ SERVICE
   ns_ok "systemd user service written. Enable with: systemctl --user enable --now novashield"
 }
 
-# -------------------------------- WEB CONTROL --------------------------------
 start_web(){
   ns_log "Starting web server..."
   stop_web || true
@@ -1395,11 +1302,9 @@ stop_web(){
   fi
 }
 
-# --------------------------------- SESSION -----------------------------------
 open_session(){ echo "$(ns_now) START ${NS_VERSION}" >>"$NS_SESSION"; }
 close_session(){ echo "$(ns_now) STOP" >>"$NS_SESSION"; }
 
-# --------------------------------- INSTALL -----------------------------------
 install_all(){
   ensure_dirs
   install_dependencies
@@ -1413,7 +1318,6 @@ install_all(){
   ns_ok "Install complete. Use: $0 --start"
 }
 
-# --------------------------------- STARTUP -----------------------------------
 start_all(){
   ensure_dirs; write_default_config; generate_keys; write_notify_py; write_server_py; write_dashboard
   open_session
@@ -1430,7 +1334,6 @@ stop_all(){
 
 restart_monitors(){ stop_monitors || true; start_monitors; }
 
-# ------------------------------ AUTH UTILITIES --------------------------------
 add_user(){
   local user pass salt
   read -rp "New username: " user
@@ -1442,8 +1345,7 @@ add_user(){
   python3 - "$NS_SESS_DB" "$user" "$sha" <<'PY'
 import json,sys
 p,u,s=sys.argv[1],sys.argv[2],sys.argv[3]
-try:
-  j=json.load(open(p))
+try: j=json.load(open(p))
 except: j={}
 ud=j.get('_userdb',{})
 ud[u]=s
@@ -1454,7 +1356,6 @@ PY
   ns_ok "User '$user' added. Enable auth by setting security.auth_enabled: true in config.yaml"
 }
 
-# ----------------------------------- CLI -------------------------------------
 usage(){ cat <<USG
 NovaShield Terminal ${NS_VERSION} — JARVIS Edition
 Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user]
@@ -1495,7 +1396,6 @@ menu(){
   done
 }
 
-# ------------------------------- ARG PARSING ---------------------------------
 if [ $# -eq 0 ]; then usage; exit 0; fi
 
 case "${1:-}" in
