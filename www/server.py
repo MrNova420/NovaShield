@@ -11,6 +11,7 @@ NS_CTRL = os.path.join(NS_HOME, 'control')
 NS_BIN  = os.path.join(NS_HOME, 'bin')
 SELF_PATH_FILE = os.path.join(NS_BIN, 'self_path')
 INDEX = os.path.join(NS_WWW, 'index.html')
+LOGIN = os.path.join(NS_WWW, 'login.html')
 CONFIG = os.path.join(NS_HOME, 'config.yaml')
 SESSIONS = os.path.join(NS_CTRL, 'sessions.json')
 CHATLOG = os.path.join(NS_LOGS, 'chat.log')
@@ -56,10 +57,10 @@ def yaml_flag(path, default=False):
     return (v=='true')
 
 def auth_enabled():
-    return yaml_flag('security.auth_enabled', False)
+    return yaml_flag('security.auth_enabled', False) or yaml_flag('auth_enabled', False)
 
 def auth_salt():
-    v = yaml_scalar('auth_salt') or 'changeme'
+    v = yaml_scalar('security.auth_salt') or yaml_scalar('auth_salt') or 'changeme'
     return v
 
 def users_list():
@@ -140,6 +141,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', ctype)
         self.send_header('Cache-Control', 'no-store')
+        # Security headers
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'no-referrer')
         if extra_headers:
             for k,v in (extra_headers or {}).items(): self.send_header(k, v)
         self.end_headers()
@@ -147,9 +152,17 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == '/':
+            if auth_enabled() and not get_session(self):
+                self._set_headers(200, 'text/html; charset=utf-8')
+                html = read_text(LOGIN, '<h1>Login required</h1>')
+                self.wfile.write(html.encode('utf-8')); return
             self._set_headers(200, 'text/html; charset=utf-8')
             html = read_text(INDEX, '<h1>NovaShield</h1>')
             self.wfile.write(html.encode('utf-8')); return
+
+        if parsed.path == '/logout':
+            self._set_headers(302, 'text/plain', {'Set-Cookie': 'NSSESS=deleted; Path=/; HttpOnly; Max-Age=0', 'Location':'/'})
+            self.wfile.write(b'bye'); return
 
         if parsed.path.startswith('/static/'):
             p = os.path.join(NS_WWW, parsed.path[len('/static/'):])
@@ -212,7 +225,6 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'dir':d,'entries':out}).encode('utf-8')); return
 
-        # NEW: read a file (under NS_HOME) for the File Manager viewer
         if parsed.path == '/api/fs_read':
             if not require_auth(self): return
             q = parse_qs(parsed.query); p = (q.get('path',[''])[0])
@@ -222,7 +234,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._set_headers(404); self.wfile.write(b'{"error":"not found"}'); return
             try:
                 size = os.path.getsize(full)
-                # Limit to ~500KB to avoid flooding the browser
                 content = open(full,'rb').read(500_000).decode('utf-8','ignore')
                 self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'path':full,'size':size,'content':content}).encode('utf-8')); return
             except Exception as e:
@@ -244,39 +255,13 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception: data={}; user=''; pwd=''
             if auth_enabled() and check_login(user, pwd):
                 tok = new_session(user)
-                self._set_headers(200, 'application/json', {'Set-Cookie': f'NSSESS={tok}; Path=/; HttpOnly'})
+                self._set_headers(200, 'application/json', {'Set-Cookie': f'NSSESS={tok}; Path=/; HttpOnly; SameSite=Strict'})
                 self.wfile.write(b'{"ok":true}'); return
             self._set_headers(401); self.wfile.write(b'{"ok":false}'); return
 
-        if parsed.path == '/api/control':
-            if not require_auth(self): return
-            try: data = json.loads(body or '{}')
-            except Exception: data={}
-            action = data.get('action',''); target = data.get('target','')
-            flag = os.path.join(NS_CTRL, f'{target}.disabled')
-            if action == 'enable' and target:
-                try: 
-                    if os.path.exists(flag): os.remove(flag)
-                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
-                except Exception: pass
-            if action == 'disable' and target:
-                try:
-                    open(flag,'w').close()
-                    # audit(f'MONITOR DISABLE {target} ip={self.client_address[0]}')  # audit function not defined in minimal version
-                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
-                except Exception: pass
-            self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
-            if action in ('backup','version','restart_monitors'):
-                try:
-                    if action=='backup': os.system(f'\"{self_path}\" --backup >/dev/null 2>&1 &')
-                    if action=='version': os.system(f'\"{self_path}\" --version-snapshot >/dev/null 2>&1 &')
-                    if action=='restart_monitors': os.system(f'\"{self_path}\" --restart-monitors >/dev/null 2>&1 &')
-                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
-                except Exception: pass
-            self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
+        if not require_auth(self): return
 
         if parsed.path == '/api/chat':
-            if not require_auth(self): return
             try: data = json.loads(body or '{}')
             except Exception: data={}
             prompt = data.get('prompt','')
@@ -285,8 +270,35 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception: pass
             self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'reply':reply}).encode('utf-8')); return
 
+        if parsed.path == '/api/control':
+            try: data = json.loads(body or '{}')
+            except Exception: data={}
+            action = data.get('action',''); target = data.get('target','')
+            flag = os.path.join(NS_CTRL, f'{target}.disabled')
+            if action == 'enable' and target:
+                try:
+                    if os.path.exists(flag): os.remove(flag)
+                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
+                except Exception:
+                    pass
+            if action == 'disable' and target:
+                try:
+                    open(flag,'w').close()
+                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
+                except Exception:
+                    pass
+            self_path = read_text(SELF_PATH_FILE).strip() or os.path.join(NS_HOME, 'bin', 'novashield.sh')
+            if action in ('backup','version','restart_monitors'):
+                try:
+                    if action=='backup': os.system(f'\"{self_path}\" --backup >/dev/null 2>&1 &')
+                    if action=='version': os.system(f'\"{self_path}\" --version-snapshot >/dev/null 2>&1 &')
+                    if action=='restart_monitors': os.system(f'\"{self_path}\" --restart-monitors >/dev/null 2>&1 &')
+                    self._set_headers(200); self.wfile.write(json.dumps({'ok':True}).encode('utf-8')); return
+                except Exception:
+                    pass
+            self._set_headers(400); self.wfile.write(b'{"ok":false}'); return
+
         if parsed.path == '/api/webgen':
-            if not require_auth(self): return
             try: data = json.loads(body or '{}')
             except Exception: data={}
             title = data.get('title','Untitled'); content = data.get('content','')
