@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.1.0 â€” JARVIS Edition â€” Allâ€‘inâ€‘One Installer & Runtime
+# NovaShield Terminal 3.1.0 — JARVIS Edition — All-in-One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
@@ -843,11 +843,11 @@ def auth_enabled(): return yaml_flag('security.auth_enabled', True)
 def csrf_required(): return yaml_flag('security.csrf_required', True)
 def require_2fa(): return yaml_flag('security.require_2fa', False)
 def rate_limit_per_min(): 
-    v=yaml_val('rate_limit_per_min'); 
+    v=yaml_val('security.rate_limit_per_min'); 
     try: return int(v)
     except: return 60
 def lockout_threshold():
-    v=yaml_val('lockout_threshold')
+    v=yaml_val('security.lockout_threshold')
     try: return int(v)
     except: return 10
 
@@ -1479,7 +1479,7 @@ write_dashboard(){
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NovaShield â€” JARVIS Edition</title>
+  <title>NovaShield — JARVIS Edition</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -1984,7 +1984,7 @@ PY
 }
 
 usage(){ cat <<USG
-NovaShield Terminal ${NS_VERSION} â€” JARVIS Edition
+NovaShield Terminal ${NS_VERSION} — JARVIS Edition
 Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user|--enable-2fa]
 USG
 }

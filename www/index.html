@@ -25,6 +25,7 @@
     <button data-tab="status" class="active">Status</button>
     <button data-tab="alerts">Alerts</button>
     <button data-tab="files">Files</button>
+    <button data-tab="terminal">Terminal</button>
     <button data-tab="ai">Jarvis</button>
     <button data-tab="webgen">Web Builder</button>
     <button data-tab="config">Config</button>
@@ -79,6 +80,19 @@
           <h3 id="viewer-title">Viewer</h3>
           <pre id="viewer-content" style="white-space:pre-wrap; overflow-x:auto;"></pre>
         </div>
+        <div class="file-actions">
+          <input id="newpath" placeholder="Path to create or save" />
+          <button id="btn-mkdir">Mkdir</button>
+          <button id="btn-save">Save Viewer -> Path</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-terminal" class="tab">
+      <div class="panel">
+        <h3>Web Terminal</h3>
+        <div id="term" tabindex="0"></div>
+        <div class="term-hint">Type here. Press Ctrl-C to interrupt. Idle timeout applies.</div>
       </div>
     </section>
 
@@ -112,6 +126,17 @@
       </div>
     </section>
   </main>
+
+  <div id="login" class="login" style="display:none;">
+    <div class="login-card">
+      <h3>Login</h3>
+      <input id="li-user" placeholder="Username" />
+      <input id="li-pass" placeholder="Password" type="password" />
+      <input id="li-otp" placeholder="2FA Code (if enabled)" />
+      <button id="li-btn">Sign in</button>
+      <div id="li-msg"></div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
