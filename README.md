@@ -1,72 +1,216 @@
-# NovaShield-
-Custom private secured encrypted terminal NovaShield Terminal? In beta 
-Quick start
+# NovaShield Terminal v3.1.0 — Enhanced Security Edition
 
-I built you a single, self-contained script that sets up the entire NovaShield Terminal 2.0 project end-to-end (installer + runtime). It:
+**NovaShield** is a comprehensive, self-contained security monitoring and management platform featuring real-time terminal access, advanced file management, and enterprise-grade security controls. This single-script solution provides complete system monitoring with an intuitive web dashboard.
 
-Detects Termux vs Linux, installs deps, creates the full directory tree.
+## 🚀 New in v3.1.0
 
-Generates RSA + AES keys, encryption helpers (file/dir encrypt/decrypt).
+- **Real Web Terminal**: Full PTY over WebSocket with live shell interaction
+- **Enhanced Security**: 2FA/TOTP, CSRF protection, rate limiting, IP filtering, optional TLS
+- **Advanced File Manager**: Sandboxed CRUD operations with real-time editing
+- **Audit Logging**: Comprehensive activity tracking for security compliance
+- **Self-Signed TLS**: Automatic certificate generation for secure connections
+- **Improved UX**: Modern dashboard with responsive design and enhanced monitoring
 
-Starts 5 background monitors (CPU, memory, disk, network, integrity).
+## ⚡ Quick Start
 
-Spins up a Python web dashboard (no external libs) with live status/alerts.
+NovaShield is delivered as a single, executable script that handles installation, configuration, and runtime management automatically. It detects your platform (Termux/Linux) and sets up everything needed.
 
-Adds backup + version snapshots, rotation, and manual overrides.
+### Installation
 
-Supports Termux services or systemd-user (when available).
-
-Provides a CLI + interactive menu.
-
-
-I put the complete all-in-one script in the canvas (left panel) as “NovaShield Terminal 2.0 — All-in-One Installer & Runtime (novashield.sh)”. Save it as novashield.sh, make it executable, and run the steps below.
-
-# 1) Save the script
-nano novashield.sh   # paste the canvas contents
+```bash
+# 1) Download and make executable
+curl -o novashield.sh https://raw.githubusercontent.com/MrNova420/NovaShield/main/novashield.sh
 chmod +x novashield.sh
 
-# 2) One-shot install (creates ~/.novashield and all subfiles)
+# 2) One-shot install (creates ~/.novashield and all components)
 ./novashield.sh --install
 
 # 3) Start everything (monitors + web dashboard)
 ./novashield.sh --start
 
-# 4) (optional) Check status
-./novashield.sh --status
+# 4) Open the dashboard
+# Default: http://127.0.0.1:8765
+# With TLS: https://127.0.0.1:8765
+```
 
-Then open the local dashboard (by default):
-http://127.0.0.1:8765
+## 🎯 Core Features
 
-Useful commands
+### Security & Authentication
+- **Multi-factor Authentication**: Username/password + optional TOTP 2FA
+- **CSRF Protection**: Token-based request validation
+- **Rate Limiting**: Configurable request throttling with auto-lockout
+- **IP Filtering**: Allow/deny lists for network access control
+- **TLS Support**: Self-signed certificate generation for encrypted connections
+- **Session Management**: Secure cookie-based sessions with configurable timeouts
 
-./novashield.sh --menu – interactive TUI for common actions
+### Real-Time Terminal
+- **WebSocket PTY**: Full terminal access through the web interface
+- **Live Shell Interaction**: Real-time command execution with output streaming
+- **Multiple Sessions**: Support for concurrent terminal connections
+- **Security Auditing**: All terminal activity logged for compliance
 
-./novashield.sh --backup – encrypted snapshot with rotation
+### Advanced File Manager
+- **Sandboxed Access**: Restricted to ~/.novashield directory tree
+- **Full CRUD Operations**: Create, read, update, delete files and directories
+- **Real-time Editing**: Built-in text editor with syntax awareness
+- **File Type Filtering**: Configurable allowed file extensions
+- **Size Limits**: Configurable maximum file size protection
 
-./novashield.sh --version-snapshot – copy of modules/projects/config/logs
+### System Monitoring
+- **Real-time Metrics**: CPU, memory, disk, network monitoring
+- **Security Scanning**: Process monitoring, integrity checking
+- **Alert System**: Configurable thresholds with multiple notification methods
+- **Log Analysis**: Automated log parsing and anomaly detection
+- **User Activity**: Login tracking and session monitoring
 
-./novashield.sh --encrypt <path> / --decrypt <file.enc> – AES-256 via OpenSSL
+## 🔧 Configuration
 
-./novashield.sh --restart-monitors – bounce the background monitors
+NovaShield uses a comprehensive YAML configuration file located at `~/.novashield/config.yaml`. Key sections include:
 
-./novashield.sh --web-start / --web-stop – control the dashboard server
+### Security Settings
+```yaml
+security:
+  auth_enabled: true
+  totp_enabled: true
+  tls_enabled: true
+  csrf_enabled: true
+  rate_limit_enabled: true
+  ip_filtering_enabled: false
+```
 
-./novashield.sh --stop – stop everything
+### Terminal Configuration
+```yaml
+terminal:
+  enabled: true
+  idle_timeout: 1800
+  max_connections: 3
+  shell: "/bin/bash"
+  working_directory: "projects"
+```
 
+### File Manager Settings
+```yaml
+file_manager:
+  enabled: true
+  sandbox_root: ".novashield"
+  max_file_size: 10485760
+  allowed_extensions: [".txt", ".md", ".py", ".sh", ".yaml", ".yml", ".json", ".log"]
+```
 
-Notes & next steps
+## 🛠️ Management Commands
 
-Termux services: If termux-services is installed, the script drops a service at ~/.termux/services/novashield. You can enable/disable with sv-enable novashield / sv-disable novashield.
+```bash
+# User & Security Management
+./novashield.sh --add-user          # Add web dashboard user
+./novashield.sh --enable-2fa         # Setup TOTP 2FA for user
 
-systemd-user (Linux): Creates ~/.config/systemd/user/novashield.service. Enable with:
+# System Control
+./novashield.sh --start             # Start all services
+./novashield.sh --stop              # Stop all services
+./novashield.sh --restart-monitors  # Restart monitoring services
+./novashield.sh --status            # Show system status
 
-systemctl --user enable --now novashield
+# Data Management
+./novashield.sh --backup            # Create encrypted backup
+./novashield.sh --version-snapshot  # Create version snapshot
+./novashield.sh --encrypt <path>    # Encrypt file/directory
+./novashield.sh --decrypt <file>    # Decrypt file
 
-LAN access: To expose the dashboard on your LAN, set allow_lan: true in ~/.novashield/config.yaml and restart.
+# Interface
+./novashield.sh --menu              # Interactive menu
+./novashield.sh --web-start         # Start web server only
+./novashield.sh --web-stop          # Stop web server only
+```
 
-Security: Keys live in ~/.novashield/keys/ with 600 perms. Backups can be encrypted by default. Keep your AES key safe.
+## 🖥️ Dashboard Features
 
-Extend: Drop your own scripts into ~/.novashield/modules/ and your work into ~/.novashield/projects/.
+The web dashboard provides comprehensive system management through an intuitive interface:
 
+- **Status Overview**: Real-time system metrics with health indicators
+- **Terminal Access**: Full shell access with WebSocket-based PTY
+- **File Manager**: Browse, edit, and manage files within the sandbox
+- **Alert Monitoring**: View and manage system alerts and notifications
+- **AI Assistant**: Jarvis integration for system queries and automation
+- **Configuration**: Live configuration management and monitoring controls
 
-If you want me to also package this into a ready-to-push GitHub repo layout (README, LICENSE, .gitignore, screenshots), say the word and I’ll generate those files too.
+## 🔒 Security Architecture
+
+### Multi-layered Protection
+1. **Authentication Layer**: Username/password + optional TOTP
+2. **Session Layer**: Secure cookies with CSRF protection
+3. **Network Layer**: Rate limiting and IP filtering
+4. **Transport Layer**: Optional TLS encryption
+5. **Application Layer**: Sandboxed operations and audit logging
+
+### Audit Trail
+All sensitive operations are logged to `~/.novashield/logs/audit.log`:
+- User authentication events
+- File system operations
+- Terminal session activity
+- Configuration changes
+- Security events
+
+## 📱 Platform Support
+
+### Termux (Android)
+- Automatic package installation via `pkg`
+- Termux-services integration for background operation
+- Android-specific optimizations and compatibility
+
+### Linux (Debian/Ubuntu/Arch/Fedora)
+- Multi-distro package manager support
+- systemd user service integration
+- Standard Linux security model compatibility
+
+## 🚀 Advanced Features
+
+### Background Services
+- **Termux**: `sv-enable novashield` / `sv-disable novashield`
+- **Linux**: `systemctl --user enable --now novashield`
+
+### Network Configuration
+```yaml
+web:
+  host: "127.0.0.1"     # Bind address
+  port: 8765            # Service port
+  allow_lan: false      # LAN access control
+```
+
+### Backup & Encryption
+- Automated encrypted backups with rotation
+- AES-256 encryption for sensitive data
+- RSA keypair generation for secure operations
+- Version snapshots for rollback capability
+
+## 🔍 Monitoring & Alerts
+
+NovaShield continuously monitors system health and security:
+
+- **CPU/Memory/Disk**: Resource utilization with configurable thresholds
+- **Network**: Connectivity monitoring and traffic analysis
+- **Security**: Process monitoring and integrity verification
+- **Logs**: Real-time log analysis with pattern detection
+- **Users**: Login tracking and session management
+
+## 📋 Requirements
+
+**Minimal Requirements:**
+- Bash 4.0+ (usually available by default)
+- Python 3.6+ (auto-installed if missing)
+- OpenSSL (auto-installed if missing)
+
+**Platform-Specific:**
+- **Termux**: Latest version recommended
+- **Linux**: Any modern distribution with package manager
+
+## 🤝 Contributing
+
+NovaShield is designed as a comprehensive, single-file solution. The entire platform is contained within `novashield.sh` for maximum portability and ease of deployment.
+
+## 📄 License
+
+MIT License - See LICENSE file for details.
+
+---
+
+**NovaShield v3.1.0** - Professional security monitoring and management platform by niteas aka MrNova420
