@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.0 — JARVIS Edition — All‑in‑One Installer & Runtime
+# NovaShield Terminal 3.0.1 — JARVIS Edition — All‑in‑One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
@@ -28,7 +28,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 # ---------------------------------- VERSION ----------------------------------
-NS_VERSION="3.0.0"
+NS_VERSION="3.0.1"
 
 # ------------------------------- GLOBAL PATHS ---------------------------------
 NS_HOME="${HOME}/.novashield"
@@ -617,7 +617,7 @@ _monitor_userlogins(){
       alert INFO "User sessions changed: $(echo "$users" | tr '\n' '; ')" || true
     fi
     prev="$users"
-    write_json "${NS_LOGS}/user.json" "{\"ts\":\"$(ns_now)\",\"who\":$(printf '%s' "$(echo "$users" | sed 's/"/\\"/g' | awk '{printf "%s\\n",$0}')" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')}"
+    write_json "${NS_LOGS}/user.json" "{\"ts\":\"$(ns_now)\",\"who\":$(printf '%s' "$(echo "$users" | sed 's/\"/\\\"/g' | awk '{printf \"%s\\\\n\",$0}')" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')}"
     sleep "$interval"
   done
 }
@@ -645,19 +645,28 @@ _monitor_logs(){
   local files patterns; files=$(awk -F'\[|\]' '/logs:/,/\}/ { if($0 ~ /files:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' ' ')
   patterns=$(awk -F'\[|\]' '/logs:/,/\}/ { if($0 ~ /patterns:/) print $2 }' "$NS_CONF" | tr -d '"' | tr ',' '|')
   [ -z "$patterns" ] && patterns="error|failed|denied|segfault"
-  declare -A last_sizes
+  # portable tailing without associative arrays (write last-size state per file)
+  local state="${NS_CTRL}/logwatch.state"
+  touch "$state" || true
   while true; do
     monitor_enabled logs || { sleep "$interval"; continue; }
     for f in $files; do
       [ -f "$f" ] || continue
-      local size; size=$(stat -c%s "$f" 2>/dev/null || wc -c <"$f" 2>/dev/null || echo 0)
-      local from=${last_sizes["$f"]:-0}
+      local size from
+      size=$(stat -c%s "$f" 2>/dev/null || wc -c <"$f" 2>/dev/null || echo 0)
+      from=$(awk -v F="$f" '$1==F{print $2}' "$state" 2>/dev/null | tail -n1)
+      [ -z "$from" ] && from=0
       if [ "$size" -gt "$from" ]; then
-        tail -c +"$((from+1))" "$f" | grep -Eai "$patterns" | while IFS= read -r line; do
+        tail -c +"$((from+1))" "$f" 2>/dev/null | grep -Eai "$patterns" | while IFS= read -r line; do
           alert WARN "Log anomaly in $(basename "$f"): $line"
         done
       fi
-      last_sizes["$f"]="$size"
+      # update state
+      if grep -q "^$f " "$state" 2>/dev/null; then
+        sed -i "s|^$f .*|$f $size|" "$state" 2>/dev/null || true
+      else
+        echo "$f $size" >>"$state"
+      fi
     done
     write_json "${NS_LOGS}/logwatch.json" "{\"ts\":\"$(ns_now)\"}"
     sleep "$interval"
@@ -668,17 +677,25 @@ _monitor_logs(){
 _supervisor(){
   local interval=10
   while true; do
-    # monitors
     for p in cpu memory disk network integrity process userlogins services logs; do
       if [ -f "${NS_PID}/${p}.pid" ]; then
         local pid; pid=$(cat "${NS_PID}/${p}.pid" 2>/dev/null || echo 0)
         if ! kill -0 "$pid" 2>/dev/null; then
           alert ERROR "Monitor $p crashed. Restarting."
-          "_monitor_${p}" & echo $! >"${NS_PID}/${p}.pid"
+          case "$p" in
+            cpu) _monitor_cpu & echo $! >"${NS_PID}/${p}.pid" ;;
+            memory) _monitor_mem & echo $! >"${NS_PID}/${p}.pid" ;;
+            disk) _monitor_disk & echo $! >"${NS_PID}/${p}.pid" ;;
+            network) _monitor_net & echo $! >"${NS_PID}/${p}.pid" ;;
+            integrity) _monitor_integrity & echo $! >"${NS_PID}/${p}.pid" ;;
+            process) _monitor_process & echo $! >"${NS_PID}/${p}.pid" ;;
+            userlogins) _monitor_userlogins & echo $! >"${NS_PID}/${p}.pid" ;;
+            services) _monitor_services & echo $! >"${NS_PID}/${p}.pid" ;;
+            logs) _monitor_logs & echo $! >"${NS_PID}/${p}.pid" ;;
+          esac
         fi
       fi
     done
-    # web
     if [ -f "${NS_PID}/web.pid" ]; then
       local wpid; wpid=$(cat "${NS_PID}/web.pid" 2>/dev/null || echo 0)
       if ! kill -0 "$wpid" 2>/dev/null; then
@@ -698,7 +715,6 @@ _monitor_scheduler(){
     local now_hm; now_hm=$(date +%H:%M)
     local ran_today_key="$(date +%Y-%m-%d)"
     awk '/scheduler:/,/tasks:/{print}' "$NS_CONF" >/dev/null 2>&1 || { sleep "$interval"; continue; }
-    # Parse tasks
     local names; names=$(awk '/tasks:/,0{if($1=="-"){print $0}}' "$NS_CONF" 2>/dev/null || true)
     local IFS=$'\n'
     for line in $names; do
@@ -731,26 +747,32 @@ scheduler_run_action(){
     backup) backup_snapshot;;
     version) version_snapshot;;
     restart_monitors) restart_monitors;;
-    *) # custom module command under modules/
-       if [ -x "${NS_MODULES}/${act}.sh" ]; then "${NS_MODULES}/${act}.sh" || alert ERROR "Module ${act} failed"; else ns_warn "Unknown scheduler action: $act"; fi
-       ;;
+    *) if [ -x "${NS_MODULES}/${act}.sh" ]; then "${NS_MODULES}/${act}.sh" || alert ERROR "Module ${act} failed"; else ns_warn "Unknown scheduler action: $act"; fi ;;
   esac
+}
+
+# Robust spawner
+_spawn_monitor(){
+  # _spawn_monitor name function_name
+  local name="$1"; shift
+  "$@" & local pid=$!
+  echo "$pid" > "${NS_PID}/${name}.pid"
 }
 
 start_monitors(){
   ns_log "Starting monitors..."
   stop_monitors || true
-  (_monitor_cpu &)          echo $! >"${NS_PID}/cpu.pid"
-  (_monitor_mem &)          echo $! >"${NS_PID}/memory.pid"
-  (_monitor_disk &)         echo $! >"${NS_PID}/disk.pid"
-  (_monitor_net &)          echo $! >"${NS_PID}/network.pid"
-  (_monitor_integrity &)    echo $! >"${NS_PID}/integrity.pid"
-  (_monitor_process &)      echo $! >"${NS_PID}/process.pid"
-  (_monitor_userlogins &)   echo $! >"${NS_PID}/userlogins.pid"
-  (_monitor_services &)     echo $! >"${NS_PID}/services.pid"
-  (_monitor_logs &)         echo $! >"${NS_PID}/logs.pid"
-  (_monitor_scheduler &)    echo $! >"${NS_PID}/scheduler.pid"
-  (_supervisor &)           echo $! >"${NS_PID}/supervisor.pid"
+  _spawn_monitor cpu _monitor_cpu
+  _spawn_monitor memory _monitor_mem
+  _spawn_monitor disk _monitor_disk
+  _spawn_monitor network _monitor_net
+  _spawn_monitor integrity _monitor_integrity
+  _spawn_monitor process _monitor_process
+  _spawn_monitor userlogins _monitor_userlogins
+  _spawn_monitor services _monitor_services
+  _spawn_monitor logs _monitor_logs
+  _spawn_monitor scheduler _monitor_scheduler
+  _spawn_monitor supervisor _supervisor
   ns_ok "Monitors started"
 }
 
@@ -842,8 +864,6 @@ def auth_salt():
     return yaml_get('security.auth_salt','changeme')
 
 def users_list():
-    # users in yaml as list of objects is not fully parsed by naive yaml_get; allow flat list "users: [user:passsha,...]" or store in sessions.json once set.
-    # For simplicity, read sessions.json for userdb if present.
     db = read_json(SESSIONS, {}) or {}
     return db.get('_userdb', {})
 
@@ -893,7 +913,6 @@ def last_lines(path, n=100):
         return []
 
 def ai_reply(prompt):
-    # Local rule-based "Jarvis"-inspired assistant. No external calls.
     prompt_low = (prompt or '').lower()
     now=time.strftime('%Y-%m-%d %H:%M:%S')
     status = {
@@ -998,7 +1017,6 @@ class Handler(SimpleHTTPRequestHandler):
             self._set_headers(200); self.wfile.write(json.dumps({'dir':d,'entries':out}).encode('utf-8')); return
 
         if parsed.path == '/site':
-            # serve generated site
             index = os.path.join(SITE_DIR,'index.html')
             self._set_headers(200,'text/html; charset=utf-8'); self.wfile.write(read_text(index,'<h1>No site yet</h1>').encode('utf-8')); return
 
@@ -1066,14 +1084,12 @@ class Handler(SimpleHTTPRequestHandler):
             Path(SITE_DIR).mkdir(parents=True, exist_ok=True)
             page_path = os.path.join(SITE_DIR, f'{slug}.html')
             write_text(page_path, f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>{title}</title></head><body><h1>{title}</h1><div>{content}</div></body></html>')
-            # update index
             pages = [p for p in os.listdir(SITE_DIR) if p.endswith('.html')]
             links = '\n'.join([f'<li><a href="/site/{p}">{p}</a></li>' for p in pages if p!='index.html'])
             write_text(os.path.join(SITE_DIR,'index.html'), f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Site</title></head><body><h1>Site</h1><ul>{links}</ul></body></html>')
             self._set_headers(200); self.wfile.write(json.dumps({'ok':True,'page':f'/site/{slug}.html'}).encode('utf-8')); return
 
         if parsed.path.startswith('/site/'):
-            # serve generated page
             p = parsed.path[len('/site/'):]
             full = os.path.join(SITE_DIR, p)
             if not os.path.abspath(full).startswith(SITE_DIR): self._set_headers(403); self.wfile.write(b'{}'); return
@@ -1105,7 +1121,6 @@ PY
 }
 
 write_dashboard(){
-  # index.html
   write_file "${NS_WWW}/index.html" 644 <<'HTML'
 <!DOCTYPE html>
 <html lang="en">
@@ -1223,7 +1238,6 @@ write_dashboard(){
 </html>
 HTML
 
-  # style.css
   write_file "${NS_WWW}/style.css" 644 <<'CSS'
 :root { --bg:#050b12; --card:#0e1726; --text:#d7e3ff; --muted:#93a3c0; --ok:#10b981; --warn:#f59e0b; --crit:#ef4444; --accent:#00d0ff; --ring:#00ffe1;}
 *{box-sizing:border-box} body{margin:0;background:radial-gradient(1200px 600px at 10% -20%,rgba(0,208,255,.12),transparent),linear-gradient(180deg,#03060c,#0a1220);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial}
@@ -1256,7 +1270,6 @@ textarea#wcontent{width:100%;height:160px;background:#0b1830;color:#d7e3ff;borde
 @media (max-width:980px){ .grid{grid-template-columns:1fr} }
 CSS
 
-  # app.js
   write_file "${NS_WWW}/app.js" 644 <<'JS'
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
@@ -1278,10 +1291,8 @@ async function refresh(){
     $('#user').textContent = JSON.stringify(j.user,null,2);
     $('#svc').textContent = JSON.stringify(j.services,null,2);
     $('#meta').textContent = JSON.stringify({projects:j.projects_count,modules:j.modules_count,version:j.version,ts:j.ts},null,2);
-    // Alerts
     const ul = $('#alerts'); ul.innerHTML='';
     (j.alerts||[]).slice(-200).reverse().forEach(line=>{ const li=document.createElement('li'); li.textContent=line; ul.appendChild(li);});
-    // Levels coloring
     const levels = {cpu:j.cpu?.level, memory:j.memory?.level, disk:j.disk?.level, network:j.network?.level};
     const map = {OK:'ok', WARN:'warn', CRIT:'crit'};
     Object.entries(levels).forEach(([k,v])=>{
@@ -1289,7 +1300,6 @@ async function refresh(){
       const el = $('#card-'+(ids[k]||k));
       if(!el) return; el.classList.remove('ok','warn','crit'); if(map[v]) el.classList.add(map[v]);
     });
-    // Config
     const conf = await (await api('/api/config')).text(); $('#config').textContent = conf;
   }catch(e){ console.error(e); }
 }
@@ -1372,7 +1382,7 @@ SERVICE
 start_web(){
   ns_log "Starting web server..."
   stop_web || true
-  (python3 "${NS_WWW}/server.py" &)
+  python3 "${NS_WWW}/server.py" &
   echo $! >"${NS_PID}/web.pid"
   ns_ok "Web server started (PID $(cat "${NS_PID}/web.pid"))"
 }
@@ -1428,7 +1438,6 @@ add_user(){
   salt=$(awk -F': ' '/auth_salt:/ {print $2}' "$NS_CONF" | tr -d ' "')
   [ -z "$salt" ] && salt="change-this-salt"
   local sha; sha=$(printf '%s' "${salt}:${pass}" | sha256sum | awk '{print $1}')
-  # store in sessions.JSON userdb
   if [ ! -f "$NS_SESS_DB" ]; then echo '{}' >"$NS_SESS_DB"; fi
   python3 - "$NS_SESS_DB" "$user" "$sha" <<'PY'
 import json,sys
@@ -1479,7 +1488,7 @@ menu(){
       8) read -rp "Path to .enc: " p; read -rp "Output path: " o; dec_file "$p" "$o";;
       9) add_user;;
       10) python3 "${NS_BIN}/notify.py" "WARN" "NovaShield Test" "This is a test notification";;
-      11) local host port; host=$(awk -F': ' '/host:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); port=$(awk -F': ' '/port:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); [ -z "$host" ] && host="127.0.0.1"; [ -z "$port" ] && port=8765; echo "Open: http://${host}:${port}";;
+      11) h=$(awk -F': ' '/host:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); prt=$(awk -F': ' '/port:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); [ -z "$h" ] && h="127.0.0.1"; [ -z "$prt" ] && prt=8765; echo "Open: http://${h}:${prt}";;
       12) break;;
       *) echo "?";;
     esac
