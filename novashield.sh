@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.0.3 — JARVIS Edition — All‑in‑One Installer & Runtime
+# NovaShield Terminal 3.1.0 — JARVIS Edition — All‑in‑One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
@@ -11,7 +11,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-NS_VERSION="3.0.3"
+NS_VERSION="3.1.0"
 
 NS_HOME="${HOME}/.novashield"
 NS_BIN="${NS_HOME}/bin"
@@ -51,6 +51,16 @@ ns_log() { echo -e "$(ns_now) [INFO ] $*" | tee -a "${NS_HOME}/launcher.log" >&2
 ns_warn(){ echo -e "${YELLOW}$(ns_now) [WARN ] $*${NC}" | tee -a "${NS_HOME}/launcher.log" >&2; }
 ns_err() { echo -e "${RED}$(ns_now) [ERROR] $*${NC}" | tee -a "${NS_HOME}/launcher.log" >&2; }
 ns_ok()  { echo -e "${GREEN}✔ $*${NC}"; }
+
+audit_log() {
+  local action="$1" user="${2:-unknown}" ip="${3:-unknown}" details="${4:-}"
+  local enabled; enabled=$(awk -F': ' '/audit:/,/^[^ ]/ { if($1 ~ /enabled/) print $2 }' "$NS_CONF" 2>/dev/null | tr -d ' ' | head -1)
+  if [ "$enabled" = "true" ]; then
+    local log_file; log_file=$(awk -F': ' '/audit:/,/^[^ ]/ { if($1 ~ /log_file/) print $2 }' "$NS_CONF" 2>/dev/null | tr -d '"' | tr -d ' ' | head -1)
+    [ -z "$log_file" ] && log_file="logs/audit.log"
+    echo "$(ns_now) [AUDIT] action=$action user=$user ip=$ip details=$details" >> "${NS_HOME}/${log_file}"
+  fi
+}
 
 alert(){
   local level="$1"; shift
@@ -104,17 +114,27 @@ write_default_config(){
   if [ -f "$NS_CONF" ]; then return 0; fi
   ns_log "Writing default config to $NS_CONF"
   write_file "$NS_CONF" 600 <<'YAML'
-version: "3.0.3"
+version: "3.1.0"
 http:
   host: 127.0.0.1
   port: 8765
   allow_lan: false
 
 security:
-  auth_enabled: false
+  auth_enabled: true
   users: []
   auth_salt: "change-this-salt"
   rate_limit_per_min: 60
+  lockout_threshold: 5
+  lockout_duration_min: 15
+  tls_enabled: false
+  tls_cert_file: "keys/server.crt"
+  tls_key_file: "keys/server.key"
+  csrf_protection: true
+  secure_headers: true
+  ip_allow_list: []
+  ip_deny_list: []
+  totp_enabled: false
 
 monitors:
   cpu:         { enabled: true,  interval_sec: 3, warn_load: 2.00, crit_load: 4.00 }
@@ -135,6 +155,18 @@ logging:
   alerts_enabled: true
   alert_sink: ["terminal", "web", "notify"]
   notify_levels: ["CRIT","WARN","ERROR"]
+
+audit:
+  enabled: true
+  log_file: "logs/audit.log"
+  actions: ["login", "logout", "control", "terminal", "file_ops", "webgen", "backup"]
+
+terminal:
+  enabled: true
+  idle_timeout_min: 30
+  max_sessions: 5
+  shell_command: ""
+  audit_commands: true
 
 backup:
   enabled: true
@@ -228,6 +260,23 @@ generate_keys(){
     ns_log "Generating AES key file: ${aesf}"
     head -c 64 /dev/urandom >"${NS_HOME}/${aesf}"
     chmod 600 "${NS_HOME}/${aesf}"
+  fi
+  
+  # Generate TLS certificates if TLS is enabled and files don't exist
+  local tls_enabled; tls_enabled=$(awk -F': ' '/tls_enabled:/ {print $2}' "$NS_CONF" | tr -d ' ' | grep -i true || echo "false")
+  if [ "$tls_enabled" = "true" ]; then
+    local cert_file key_file
+    cert_file=$(awk -F': ' '/tls_cert_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' || echo "keys/server.crt")
+    key_file=$(awk -F': ' '/tls_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' || echo "keys/server.key")
+    
+    if [ ! -f "${NS_HOME}/${cert_file}" ] || [ ! -f "${NS_HOME}/${key_file}" ]; then
+      ns_log "Generating self-signed TLS certificate"
+      (cd "$NS_KEYS" && \
+        openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt -days 365 -nodes \
+        -subj "/C=US/ST=State/L=City/O=NovaShield/CN=localhost" 2>/dev/null)
+      chmod 600 "${NS_KEYS}/server.key"
+      chmod 644 "${NS_KEYS}/server.crt"
+    fi
   fi
 }
 
@@ -1387,12 +1436,59 @@ j['_userdb']=ud
 open(p,'w').write(json.dumps(j))
 print('User stored')
 PY
-  ns_ok "User '$user' added. Enable auth by setting security.auth_enabled: true in config.yaml"
+  ns_ok "User '$user' added."
+}
+
+enable_2fa(){
+  local user
+  read -rp "Username for 2FA setup: " user
+  if [ ! -f "$NS_SESS_DB" ]; then 
+    ns_err "No users found. Add a user first with --add-user"
+    return 1
+  fi
+  
+  # Check if user exists
+  local exists; exists=$(python3 - "$NS_SESS_DB" "$user" <<'PY'
+import json,sys
+try: j=json.load(open(sys.argv[1]))
+except: j={}
+ud=j.get('_userdb',{})
+print('yes' if sys.argv[2] in ud else 'no')
+PY
+)
+  
+  if [ "$exists" != "yes" ]; then
+    ns_err "User '$user' not found. Add user first with --add-user"
+    return 1
+  fi
+  
+  # Generate TOTP secret
+  local secret; secret=$(head -c 20 /dev/urandom | base32 | tr -d '=')
+  
+  # Store TOTP secret
+  python3 - "$NS_SESS_DB" "$user" "$secret" <<'PY'
+import json,sys
+p,u,s=sys.argv[1],sys.argv[2],sys.argv[3]
+try: j=json.load(open(p))
+except: j={}
+totp=j.get('_totp',{})
+totp[u]=s
+j['_totp']=totp
+open(p,'w').write(json.dumps(j))
+PY
+  
+  # Update config to enable TOTP
+  sed -i 's/totp_enabled: false/totp_enabled: true/' "$NS_CONF" 2>/dev/null || true
+  
+  ns_ok "2FA enabled for user '$user'"
+  echo "TOTP Secret: $secret"
+  echo "QR Code URL: https://chart.googleapis.com/chart?chs=200x200&chld=M|0&cht=qr&chl=otpauth://totp/NovaShield:${user}%3Fsecret%3D${secret}%26issuer%3DNovaShield"
+  echo "Add this secret to your authenticator app (Google Authenticator, Authy, etc.)"
 }
 
 usage(){ cat <<USG
 NovaShield Terminal ${NS_VERSION} — JARVIS Edition
-Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user]
+Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user|--enable-2fa]
 USG
 }
 
@@ -1411,7 +1507,7 @@ menu(){
   select opt in \
     "Start All" "Stop All" "Restart Monitors" "Status" \
     "Backup" "Version Snapshot" "Encrypt File/Dir" "Decrypt File" \
-    "Add Web User" "Test Notification" "Open Dashboard URL" "Quit"; do
+    "Add Web User" "Enable 2FA" "Test Notification" "Open Dashboard URL" "Quit"; do
     case $REPLY in
       1) start_all;;
       2) stop_all;;
@@ -1422,9 +1518,10 @@ menu(){
       7) read -rp "Path to file/dir: " p; if [ -d "$p" ]; then enc_dir "$p" "$p.tar.gz.enc"; else enc_file "$p" "$p.enc"; fi;;
       8) read -rp "Path to .enc: " p; read -rp "Output path: " o; dec_file "$p" "$o";;
       9) add_user;;
-      10) python3 "${NS_BIN}/notify.py" "WARN" "NovaShield Test" "This is a test notification";;
-      11) h=$(awk -F': ' '/host:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); prt=$(awk -F': ' '/port:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); [ -z "$h" ] && h="127.0.0.1"; [ -z "$prt" ] && prt=8765; echo "Open: http://${h}:${prt}";;
-      12) break;;
+      10) enable_2fa;;
+      11) python3 "${NS_BIN}/notify.py" "WARN" "NovaShield Test" "This is a test notification";;
+      12) h=$(awk -F': ' '/host:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); prt=$(awk -F': ' '/port:/ {print $2}' "$NS_CONF" | head -n1 | tr -d '" '); [ -z "$h" ] && h="127.0.0.1"; [ -z "$prt" ] && prt=8765; echo "Open: http://${h}:${prt}";;
+      13) break;;
       *) echo "?";;
     esac
   done
@@ -1447,6 +1544,7 @@ case "${1:-}" in
   --web-start) start_web;;
   --web-stop) stop_web;;
   --add-user) add_user;;
+  --enable-2fa) enable_2fa;;
   --menu) menu;;
   *) usage; exit 1;;
 esac
