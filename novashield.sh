@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NovaShield Terminal 3.0.3 — JARVIS Edition — All‑in‑One Installer & Runtime
+# NovaShield Terminal 3.1.0 — JARVIS Edition — All‑in‑One Installer & Runtime
 # ==============================================================================
 # Author  : niteas aka MrNova420
 # Project : NovaShield (a.k.a. Nova)
 # License : MIT
 # Platform: Termux (Android) + Linux (Debian/Ubuntu/Arch/Fedora) auto-detect
+# Features: Web Terminal (PTY), 2FA/TOTP, TLS, File Manager, Enhanced Security
 # ==============================================================================
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-NS_VERSION="3.0.3"
+NS_VERSION="3.1.0"
 
 NS_HOME="${HOME}/.novashield"
 NS_BIN="${NS_HOME}/bin"
@@ -33,6 +34,17 @@ NS_ALERTS="${NS_LOGS}/alerts.log"
 NS_CHATLOG="${NS_LOGS}/chat.log"
 NS_SCHED_STATE="${NS_CTRL}/scheduler.state"
 NS_SESS_DB="${NS_CTRL}/sessions.json"
+NS_AUDIT_LOG="${NS_LOGS}/audit.log"
+NS_CERT_DIR="${NS_KEYS}/certs"
+NS_RATE_LIMIT_DB="${NS_CTRL}/rate_limits.json"
+NS_IP_ALLOWLIST="${NS_CTRL}/ip_allow.txt"
+NS_IP_DENYLIST="${NS_CTRL}/ip_deny.txt"
+
+NS_AUDIT_LOG="${NS_LOGS}/audit.log"
+NS_CERT_DIR="${NS_KEYS}/certs"
+NS_RATE_LIMIT_DB="${NS_CTRL}/rate_limits.json"
+NS_IP_ALLOWLIST="${NS_CTRL}/ip_allow.txt"
+NS_IP_DENYLIST="${NS_CTRL}/ip_deny.txt"
 
 NS_DEFAULT_PORT=8765
 NS_DEFAULT_HOST="127.0.0.1"
@@ -75,6 +87,11 @@ if uname -a | grep -iq termux || { [ -n "${PREFIX:-}" ] && echo "$PREFIX" | grep
   IS_TERMUX=1
 fi
 
+audit_log() {
+  local action="$1" user="${2:-system}" details="${3:-}"
+  echo "$(ns_now) $user $action $details" >> "$NS_AUDIT_LOG"
+}
+
 PKG_INSTALL(){
   if [ "$IS_TERMUX" -eq 1 ]; then
     pkg install -y "$@"
@@ -92,37 +109,80 @@ PKG_INSTALL(){
 ensure_dirs(){
   mkdir -p "$NS_BIN" "$NS_LOGS" "$NS_WWW" "$NS_MODULES" "$NS_PROJECTS" \
            "$NS_VERSIONS" "$NS_KEYS" "$NS_CTRL" "$NS_TMP" "$NS_PID" \
-           "$NS_LAUNCHER_BACKUPS" "${NS_HOME}/backups" "${NS_HOME}/site"
+           "$NS_LAUNCHER_BACKUPS" "${NS_HOME}/backups" "${NS_HOME}/site" \
+           "$NS_CERT_DIR"
   : >"$NS_ALERTS" || true
   : >"$NS_CHATLOG" || true
+  : >"$NS_AUDIT_LOG" || true
   [ -f "$NS_SESS_DB" ] || echo '{}' >"$NS_SESS_DB"
   echo "$NS_VERSION" >"$NS_VERSION_FILE"
   echo "$NS_SELF" >"$NS_SELF_PATH_FILE"
+  audit_log "ensure_dirs" "system" "directories created"
 }
 
 write_default_config(){
   if [ -f "$NS_CONF" ]; then return 0; fi
   ns_log "Writing default config to $NS_CONF"
   write_file "$NS_CONF" 600 <<'YAML'
-version: "3.0.3"
-http:
-  host: 127.0.0.1
+# NovaShield 3.1.0 Configuration
+version: "3.1.0"
+
+# Web server settings
+web:
+  host: "127.0.0.1"
   port: 8765
   allow_lan: false
 
+# Enhanced Security Settings
 security:
   auth_enabled: false
-  users: []
-  auth_salt: "change-this-salt"
-  rate_limit_per_min: 60
+  auth_salt: "change-this-salt-in-production"
+  session_timeout: 3600
+  
+  # Two-Factor Authentication (TOTP)
+  totp_enabled: false
+  totp_issuer: "NovaShield"
+  
+  # TLS/SSL Support
+  tls_enabled: false
+  cert_file: "keys/certs/server.crt"
+  key_file: "keys/certs/server.key"
+  
+  # CSRF Protection
+  csrf_enabled: true
+  
+  # Rate Limiting
+  rate_limit_enabled: true
+  rate_limit_requests: 30
+  rate_limit_window: 60
+  rate_limit_lockout: 300
+  
+  # IP Filtering
+  ip_filtering_enabled: false
+  ip_allowlist_file: "control/ip_allow.txt"
+  ip_denylist_file: "control/ip_deny.txt"
 
+# File Manager Settings
+file_manager:
+  enabled: true
+  sandbox_root: ".novashield"
+  max_file_size: 10485760  # 10MB
+  allowed_extensions: [".txt", ".md", ".py", ".sh", ".yaml", ".yml", ".json", ".log"]
+
+# Terminal Settings
+terminal:
+  enabled: true
+  idle_timeout: 1800  # 30 minutes
+  max_connections: 3
+  shell: "/bin/bash"
+  working_directory: "projects"
+
+# Monitoring configuration
 monitors:
-  cpu:         { enabled: true,  interval_sec: 3, warn_load: 2.00, crit_load: 4.00 }
-  memory:      { enabled: true,  interval_sec: 3, warn_pct: 80,  crit_pct: 92 }
-  # On Termux, "/" can read 100% because it's a tiny system mount.
-  # We will automatically switch to ~/.novashield at runtime if mount is "/".
+  cpu:         { enabled: true,  interval_sec: 5,  warn_pct: 80, crit_pct: 95 }
+  memory:      { enabled: true,  interval_sec: 5,  warn_pct: 80, crit_pct: 95 }
   disk:        { enabled: true,  interval_sec: 10, warn_pct: 85, crit_pct: 95, mount: "/" }
-  network:     { enabled: true,  interval_sec: 5, iface: "", ping_host: "1.1.1.1", loss_warn: 20 }
+  network:     { enabled: true,  interval_sec: 5,  iface: "", ping_host: "1.1.1.1", loss_warn: 20 }
   integrity:   { enabled: true,  interval_sec: 60, watch_paths: ["/system/bin","/system/xbin","/usr/bin"] }
   process:     { enabled: true,  interval_sec: 10, suspicious: ["nc","nmap","hydra","netcat","telnet"] }
   userlogins:  { enabled: true,  interval_sec: 30 }
@@ -130,22 +190,27 @@ monitors:
   logs:        { enabled: true,  interval_sec: 15, files: ["/var/log/auth.log","/var/log/syslog"], patterns:["error","failed","denied","segfault"] }
   scheduler:   { enabled: true,  interval_sec: 30 }
 
+# Logging and alerting
 logging:
   keep_days: 14
   alerts_enabled: true
   alert_sink: ["terminal", "web", "notify"]
   notify_levels: ["CRIT","WARN","ERROR"]
+  audit_enabled: true
 
+# Backup settings
 backup:
   enabled: true
   max_keep: 10
   encrypt: true
   paths: ["projects", "modules", "config.yaml"]
 
+# Encryption keys
 keys:
   rsa_bits: 4096
   aes_key_file: "keys/aes.key"
 
+# Notification settings
 notifications:
   email:
     enabled: false
@@ -163,15 +228,6 @@ notifications:
     enabled: false
     webhook_url: ""
 
-updates:
-  enabled: false
-  source: ""
-
-sync:
-  enabled: false
-  method: "rclone"
-  remote: ""
-
 scheduler:
   tasks:
     - name: "daily-backup"
@@ -186,6 +242,7 @@ webgen:
   site_name: "NovaShield Site"
   theme: "jarvis-dark"
 YAML
+  audit_log "write_config" "system" "v3.1.0 configuration written"
 }
 
 install_dependencies(){
@@ -229,6 +286,90 @@ generate_keys(){
     head -c 64 /dev/urandom >"${NS_HOME}/${aesf}"
     chmod 600 "${NS_HOME}/${aesf}"
   fi
+  audit_log "generate_keys" "system" "encryption keys generated"
+}
+
+generate_self_signed_cert(){
+  local cert_file="$NS_CERT_DIR/server.crt"
+  local key_file="$NS_CERT_DIR/server.key"
+  
+  if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
+    return 0
+  fi
+  
+  ns_log "Generating self-signed certificate..."
+  
+  local openssl_cmd="openssl"
+  if [ "$IS_TERMUX" -eq 1 ] && command -v openssl-tool >/dev/null 2>&1; then
+    openssl_cmd="openssl-tool"
+  fi
+  
+  "$openssl_cmd" req -x509 -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" \
+    -days 365 -nodes -subj "/C=US/ST=State/L=City/O=NovaShield/CN=localhost" 2>/dev/null
+  
+  chmod 600 "$key_file" "$cert_file"
+  audit_log "generate_cert" "system" "self-signed certificate generated"
+  ns_ok "Self-signed certificate generated"
+}
+
+# TOTP Support Functions
+generate_totp_secret(){
+  local user="$1"
+  local secret_file="${NS_KEYS}/totp_${user}.secret"
+  if [ -f "$secret_file" ]; then
+    return 0
+  fi
+  
+  # Generate base32 secret (16 chars = 80 bits)
+  local secret
+  secret=$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16)
+  echo "$secret" > "$secret_file"
+  chmod 600 "$secret_file"
+  audit_log "generate_totp_secret" "$user" "TOTP secret generated"
+}
+
+get_totp_secret(){
+  local user="$1"
+  local secret_file="${NS_KEYS}/totp_${user}.secret"
+  if [ -f "$secret_file" ]; then
+    cat "$secret_file"
+  fi
+}
+
+verify_totp(){
+  local user="$1" code="$2"
+  local secret; secret=$(get_totp_secret "$user")
+  if [ -z "$secret" ]; then
+    return 1
+  fi
+  
+  # Simple TOTP verification using Python
+  python3 << EOF
+import hmac, hashlib, struct, time, base64
+
+def totp(secret, time_step=30, digits=6):
+    # Convert base32 secret to bytes
+    try:
+        key = base64.b32decode(secret.upper() + '=' * (8 - len(secret) % 8))
+    except:
+        exit(1)
+    
+    # Get current time window
+    counter = int(time.time() // time_step)
+    
+    # Generate TOTP for current and previous window (allow 30s drift)
+    for window in [counter, counter - 1]:
+        counter_bytes = struct.pack('>Q', window)
+        hmac_digest = hmac.new(key, counter_bytes, hashlib.sha1).digest()
+        offset = hmac_digest[-1] & 0x0f
+        code = struct.unpack('>I', hmac_digest[offset:offset+4])[0] & 0x7fffffff
+        code = str(code % (10 ** digits)).zfill(digits)
+        if code == "$code":
+            exit(0)
+    exit(1)
+
+totp("$secret")
+EOF
 }
 
 aes_key_path(){ awk -F': ' '/aes_key_file:/ {print $2}' "$NS_CONF" | tr -d '"' | tr -d ' ' ; }
@@ -1388,11 +1529,69 @@ open(p,'w').write(json.dumps(j))
 print('User stored')
 PY
   ns_ok "User '$user' added. Enable auth by setting security.auth_enabled: true in config.yaml"
+  audit_log "add_user" "$user" "user account created"
+}
+
+enable_2fa(){
+  local user
+  read -rp "Username for 2FA enrollment: " user
+  
+  # Check if user exists
+  if [ ! -f "$NS_SESS_DB" ]; then
+    ns_err "No users found. Add a user first with --add-user"
+    return 1
+  fi
+  
+  local user_exists
+  user_exists=$(python3 - "$NS_SESS_DB" "$user" <<'PY'
+import json,sys
+try:
+    j=json.load(open(sys.argv[1]))
+    ud=j.get('_userdb',{})
+    if sys.argv[2] in ud:
+        print("yes")
+    else:
+        print("no")
+except:
+    print("no")
+PY
+)
+  
+  if [ "$user_exists" != "yes" ]; then
+    ns_err "User '$user' not found. Add user first with --add-user"
+    return 1
+  fi
+  
+  # Generate TOTP secret
+  generate_totp_secret "$user"
+  local secret; secret=$(get_totp_secret "$user")
+  
+  if [ -z "$secret" ]; then
+    ns_err "Failed to generate TOTP secret"
+    return 1
+  fi
+  
+  # Generate QR code URL for user
+  local issuer="NovaShield"
+  local qr_url="otpauth://totp/${issuer}:${user}?secret=${secret}&issuer=${issuer}"
+  
+  ns_ok "TOTP enrollment for user '$user'"
+  echo ""
+  echo "Secret: $secret"
+  echo ""
+  echo "Scan this QR code with your authenticator app:"
+  echo "$qr_url"
+  echo ""
+  echo "Or enter the secret manually in your authenticator app."
+  echo ""
+  echo "After setup, enable TOTP by setting security.totp_enabled: true in config.yaml"
+  
+  audit_log "enable_2fa" "$user" "TOTP enrollment completed"
 }
 
 usage(){ cat <<USG
 NovaShield Terminal ${NS_VERSION} — JARVIS Edition
-Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user]
+Usage: $0 [--install|--start|--stop|--restart-monitors|--status|--backup|--version-snapshot|--encrypt <path>|--decrypt <file.enc>|--web-start|--web-stop|--menu|--add-user|--enable-2fa]
 USG
 }
 
@@ -1447,6 +1646,7 @@ case "${1:-}" in
   --web-start) start_web;;
   --web-stop) stop_web;;
   --add-user) add_user;;
+  --enable-2fa) enable_2fa;;
   --menu) menu;;
   *) usage; exit 1;;
 esac
