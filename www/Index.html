@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NovaShield — JARVIS Edition</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="ring"></div>
+      <h1>NovaShield <span class="mini">JARVIS</span></h1>
+      <div class="by">by niteas aka MrNova420</div>
+    </div>
+    <div class="actions">
+      <button id="btn-refresh">Refresh</button>
+      <button data-act="backup">Backup</button>
+      <button data-act="version">Snapshot</button>
+      <button data-act="restart_monitors">Restart Monitors</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="status" class="active">Status</button>
+    <button data-tab="alerts">Alerts</button>
+    <button data-tab="files">Files</button>
+    <button data-tab="ai">Jarvis</button>
+    <button data-tab="webgen">Web Builder</button>
+    <button data-tab="config">Config</button>
+  </nav>
+
+  <main>
+    <section id="tab-status" class="tab active">
+      <section class="grid">
+        <div class="card" id="card-cpu"><h2>CPU</h2><div class="value" id="cpu"></div></div>
+        <div class="card" id="card-mem"><h2>Memory</h2><div class="value" id="mem"></div></div>
+        <div class="card" id="card-disk"><h2>Disk</h2><div class="value" id="disk"></div></div>
+        <div class="card" id="card-net"><h2>Network</h2><div class="value" id="net"></div></div>
+        <div class="card" id="card-int"><h2>Integrity</h2><div class="value" id="int"></div></div>
+        <div class="card" id="card-proc"><h2>Processes</h2><div class="value" id="proc"></div></div>
+        <div class="card" id="card-user"><h2>Users</h2><div class="value" id="user"></div></div>
+        <div class="card" id="card-svc"><h2>Services</h2><div class="value" id="svc"></div></div>
+        <div class="card" id="card-meta"><h2>Meta</h2><div class="value" id="meta"></div></div>
+      </section>
+      <div class="panel">
+        <h3>Monitors Control</h3>
+        <div class="toggles">
+          <button class="toggle" data-target="cpu">CPU</button>
+          <button class="toggle" data-target="memory">Memory</button>
+          <button class="toggle" data-target="disk">Disk</button>
+          <button class="toggle" data-target="network">Network</button>
+          <button class="toggle" data-target="integrity">Integrity</button>
+          <button class="toggle" data-target="process">Process</button>
+          <button class="toggle" data-target="userlogins">Users</button>
+          <button class="toggle" data-target="services">Services</button>
+          <button class="toggle" data-target="logs">Logs</button>
+          <button class="toggle" data-target="scheduler">Scheduler</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-alerts" class="tab">
+      <div class="panel">
+        <h3>Alerts</h3>
+        <ul id="alerts"></ul>
+      </div>
+    </section>
+
+    <section id="tab-files" class="tab">
+      <div class="panel">
+        <h3>File Manager</h3>
+        <div class="filebar">
+          <input id="cwd" value="~/.novashield" />
+          <button id="btn-list">List</button>
+        </div>
+        <div id="filelist"></div>
+        <div id="viewer" class="panel" style="display:none; margin-top:10px;">
+          <h3 id="viewer-title">Viewer</h3>
+          <pre id="viewer-content" style="white-space:pre-wrap; overflow-x:auto;"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-ai" class="tab">
+      <div class="panel">
+        <h3>Jarvis Assistant</h3>
+        <div id="chat">
+          <div id="chatlog"></div>
+          <div class="chatbox">
+            <input id="prompt" placeholder="Ask Jarvis... try: status, backup, IP" />
+            <button id="send">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-webgen" class="tab">
+      <div class="panel">
+        <h3>Webpage Builder</h3>
+        <input id="wtitle" placeholder="Page title" />
+        <textarea id="wcontent" placeholder="HTML content"></textarea>
+        <button id="wmake">Create Page</button>
+        <div id="wresult"></div>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab">
+      <div class="panel">
+        <h3>Config (read-only here)</h3>
+        <pre id="config" style="white-space:pre-wrap;"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
