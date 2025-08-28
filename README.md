@@ -2,6 +2,25 @@
 Custom private secured encrypted terminal NovaShield Terminal? In beta 
 Quick start
 
+I built you a single, self-contained script that sets up the entire NovaShield Terminal 2.0 project end-to-end (installer + runtime). It:
+
+Detects Termux vs Linux, installs deps, creates the full directory tree.
+
+Generates RSA + AES keys, encryption helpers (file/dir encrypt/decrypt).
+
+Starts 5 background monitors (CPU, memory, disk, network, integrity).
+
+Spins up a Python web dashboard (no external libs) with live status/alerts.
+
+Adds backup + version snapshots, rotation, and manual overrides.
+
+Supports Termux services or systemd-user (when available).
+
+Provides a CLI + interactive menu.
+
+
+I put the complete all-in-one script in the canvas (left panel) as “NovaShield Terminal 2.0 — All-in-One Installer & Runtime (novashield.sh)”. Save it as novashield.sh, make it executable, and run the steps below.
+
 # 1) Save the script
 nano novashield.sh   # paste the canvas contents
 chmod +x novashield.sh
