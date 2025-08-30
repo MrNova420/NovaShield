@@ -529,14 +529,345 @@ $('#tab-terminal').addEventListener('click', ()=>{
   if(!ws) setTimeout(connectTerm, 100); 
 });
 
-// Enhanced Login Modal
-function showLogin(){
-  $('#login').style.display='';
-  $('#li-user').focus();
+// Config Editor
+async function loadConfig(){
+  try{
+    showLoading('Loading configuration...');
+    const response = await api('/api/config');
+    const config = await response.text();
+    $('#config-editor').value = config;
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    toast('Failed to load config: ' + e.message, 'error');
+  }
+}
+
+$('#config-reload').onclick = loadConfig;
+
+$('#config-save').onclick = async ()=>{
+  const config = $('#config-editor').value;
+  try{
+    showLoading('Saving configuration...');
+    await api('/api/config', {
+      method: 'POST',
+      body: JSON.stringify({config})
+    });
+    toast('Configuration saved successfully', 'success');
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    toast('Failed to save config: ' + e.message, 'error');
+  }
+}
+
+$('#config-validate').onclick = async ()=>{
+  const config = $('#config-editor').value;
+  try{
+    showLoading('Validating YAML...');
+    const response = await api('/api/config/validate', {
+      method: 'POST',
+      body: JSON.stringify({config})
+    });
+    const result = await response.json();
+    
+    if(result.valid) {
+      $('#config-status').innerHTML = '<span class="text-success">✓ Valid YAML</span>';
+      toast('Configuration is valid', 'success');
+    } else {
+      $('#config-status').innerHTML = `<span class="text-error">✗ Invalid YAML: ${result.error}</span>`;
+      toast('Invalid YAML: ' + result.error, 'error');
+    }
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    $('#config-status').innerHTML = `<span class="text-error">✗ Validation failed: ${e.message}</span>`;
+    toast('Validation failed: ' + e.message, 'error');
+  }
+}
+
+// Web Generator
+async function loadPages(){
+  try{
+    const response = await api('/api/webgen/pages');
+    const pages = await response.json();
+    const container = $('#pages');
+    container.innerHTML = '';
+    
+    pages.forEach(page => {
+      const pageDiv = document.createElement('div');
+      pageDiv.style.padding = '8px';
+      pageDiv.style.border = '1px solid #173764';
+      pageDiv.style.borderRadius = '6px';
+      pageDiv.style.margin = '4px 0';
+      pageDiv.innerHTML = `
+        <span style="color: #d7e3ff">${page.title}</span>
+        <button onclick="editPage('${page.filename}')" style="margin-left: 8px; font-size: 12px;">Edit</button>
+        <button onclick="deletePage('${page.filename}')" style="margin-left: 4px; font-size: 12px;">Delete</button>
+      `;
+      container.appendChild(pageDiv);
+    });
+  } catch(e) {
+    console.error('Failed to load pages:', e);
+  }
+}
+
+$('#wmake').onclick = async ()=>{
+  const title = $('#wtitle').value.trim();
+  const content = $('#wcontent').value;
   
-  // Update login attempts display
-  if(loginAttempts > 0) {
-    $('#login-attempts').textContent = `Failed attempts: ${loginAttempts}`;
+  if(!title || !content) {
+    toast('Please enter both title and content', 'warning');
+    return;
+  }
+  
+  try{
+    showLoading('Creating page...');
+    const response = await api('/api/webgen/create', {
+      method: 'POST',
+      body: JSON.stringify({title, content})
+    });
+    const result = await response.json();
+    
+    $('#wresult').innerHTML = `<span class="text-success">Page created: ${result.filename}</span>`;
+    toast('Page created successfully', 'success');
+    loadPages();
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    $('#wresult').innerHTML = `<span class="text-error">Failed: ${e.message}</span>`;
+    toast('Failed to create page: ' + e.message, 'error');
+  }
+}
+
+window.editPage = async (filename) => {
+  try{
+    const response = await api(`/api/webgen/page/${filename}`);
+    const page = await response.json();
+    $('#wtitle').value = page.title;
+    $('#wcontent').value = page.content;
+    toast('Page loaded for editing', 'info');
+  } catch(e) {
+    toast('Failed to load page: ' + e.message, 'error');
+  }
+}
+
+window.deletePage = async (filename) => {
+  if(!confirm(`Delete page: ${filename}?`)) return;
+  
+  try{
+    await api(`/api/webgen/page/${filename}`, {method: 'DELETE'});
+    toast('Page deleted successfully', 'success');
+    loadPages();
+  } catch(e) {
+    toast('Failed to delete page: ' + e.message, 'error');
+  }
+}
+
+// Admin Panel
+async function loadAdminData(){
+  try{
+    const response = await api('/api/admin/users');
+    const users = await response.json();
+    const container = $('#user-list');
+    container.innerHTML = '';
+    
+    users.forEach(user => {
+      const userDiv = document.createElement('div');
+      userDiv.style.padding = '8px';
+      userDiv.style.border = '1px solid #173764';
+      userDiv.style.borderRadius = '6px';
+      userDiv.style.margin = '4px 0';
+      userDiv.style.display = 'flex';
+      userDiv.style.justifyContent = 'space-between';
+      userDiv.style.alignItems = 'center';
+      
+      userDiv.innerHTML = `
+        <span style="color: #d7e3ff">${user.username} ${user.has_2fa ? '🔐' : ''}</span>
+        <div>
+          <button onclick="resetPassword('${user.username}')" style="font-size: 12px; margin-right: 4px;">Reset Password</button>
+          <button onclick="toggle2FA('${user.username}', ${!user.has_2fa})" style="font-size: 12px; margin-right: 4px;">
+            ${user.has_2fa ? 'Disable' : 'Enable'} 2FA
+          </button>
+          <button onclick="deleteUser('${user.username}')" style="font-size: 12px;">Delete</button>
+        </div>
+      `;
+      container.appendChild(userDiv);
+    });
+  } catch(e) {
+    console.error('Failed to load users:', e);
+  }
+}
+
+$('#add-user').onclick = async ()=>{
+  const username = $('#new-username').value.trim();
+  const password = $('#new-password').value;
+  
+  if(!username || !password) {
+    toast('Please enter username and password', 'warning');
+    return;
+  }
+  
+  try{
+    showLoading('Adding user...');
+    await api('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({username, password})
+    });
+    
+    $('#new-username').value = '';
+    $('#new-password').value = '';
+    toast('User added successfully', 'success');
+    loadAdminData();
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    toast('Failed to add user: ' + e.message, 'error');
+  }
+}
+
+window.deleteUser = async (username) => {
+  if(!confirm(`Delete user: ${username}?`)) return;
+  
+  try{
+    await api(`/api/admin/users/${username}`, {method: 'DELETE'});
+    toast('User deleted successfully', 'success');
+    loadAdminData();
+  } catch(e) {
+    toast('Failed to delete user: ' + e.message, 'error');
+  }
+}
+
+window.resetPassword = async (username) => {
+  const newPassword = prompt(`Enter new password for ${username}:`);
+  if(!newPassword) return;
+  
+  try{
+    await api(`/api/admin/users/${username}/password`, {
+      method: 'POST',
+      body: JSON.stringify({password: newPassword})
+    });
+    toast('Password reset successfully', 'success');
+  } catch(e) {
+    toast('Failed to reset password: ' + e.message, 'error');
+  }
+}
+
+window.toggle2FA = async (username, enable) => {
+  try{
+    await api(`/api/admin/users/${username}/2fa`, {
+      method: 'POST',
+      body: JSON.stringify({enable})
+    });
+    toast(`2FA ${enable ? 'enabled' : 'disabled'} for ${username}`, 'success');
+    loadAdminData();
+  } catch(e) {
+    toast(`Failed to ${enable ? 'enable' : 'disable'} 2FA: ` + e.message, 'error');
+  }
+}
+
+// Backup controls
+$('#create-backup').onclick = async ()=>{
+  try{
+    showLoading('Creating backup...');
+    const response = await api('/api/admin/backup', {method: 'POST'});
+    const result = await response.json();
+    $('#backup-status').innerHTML = `<span class="text-success">Backup created: ${result.filename}</span>`;
+    toast('Backup created successfully', 'success');
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    $('#backup-status').innerHTML = `<span class="text-error">Backup failed: ${e.message}</span>`;
+    toast('Backup failed: ' + e.message, 'error');
+  }
+}
+
+$('#list-backups').onclick = async ()=>{
+  try{
+    const response = await api('/api/admin/backups');
+    const backups = await response.json();
+    const list = backups.map(b => b.filename).join(', ');
+    $('#backup-status').innerHTML = `<span class="text-info">Available backups: ${list}</span>`;
+  } catch(e) {
+    $('#backup-status').innerHTML = `<span class="text-error">Failed to list backups: ${e.message}</span>`;
+  }
+}
+
+$('#restore-backup').onclick = async ()=>{
+  const filename = $('#restore-file').value.trim();
+  if(!filename) {
+    toast('Please enter backup filename', 'warning');
+    return;
+  }
+  
+  if(!confirm(`Restore from backup: ${filename}? This will overwrite current data.`)) return;
+  
+  try{
+    showLoading('Restoring backup...');
+    await api('/api/admin/restore', {
+      method: 'POST',
+      body: JSON.stringify({filename})
+    });
+    $('#backup-status').innerHTML = `<span class="text-success">Restore completed</span>`;
+    toast('Backup restored successfully', 'success');
+    hideLoading();
+  } catch(e) {
+    hideLoading();
+    $('#backup-status').innerHTML = `<span class="text-error">Restore failed: ${e.message}</span>`;
+    toast('Restore failed: ' + e.message, 'error');
+  }
+}
+
+// Notification settings
+$('#save-email').onclick = async ()=>{
+  const config = {
+    server: $('#email-server').value.trim(),
+    port: parseInt($('#email-port').value) || 587,
+    username: $('#email-user').value.trim(),
+    password: $('#email-pass').value
+  };
+  
+  try{
+    await api('/api/admin/notifications/email', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    });
+    toast('Email settings saved', 'success');
+  } catch(e) {
+    toast('Failed to save email settings: ' + e.message, 'error');
+  }
+}
+
+$('#save-telegram').onclick = async ()=>{
+  const config = {
+    token: $('#telegram-token').value.trim(),
+    chat_id: $('#telegram-chat').value.trim()
+  };
+  
+  try{
+    await api('/api/admin/notifications/telegram', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    });
+    toast('Telegram settings saved', 'success');
+  } catch(e) {
+    toast('Failed to save Telegram settings: ' + e.message, 'error');
+  }
+}
+
+$('#save-discord').onclick = async ()=>{
+  const config = {
+    webhook_url: $('#discord-webhook').value.trim()
+  };
+  
+  try{
+    await api('/api/admin/notifications/discord', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    });
+    toast('Discord settings saved', 'success');
+  } catch(e) {
+    toast('Failed to save Discord settings: ' + e.message, 'error');
   }
 }
 
