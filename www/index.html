@@ -3,56 +3,180 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NovaShield — Login</title>
-  <style>
-    :root { --bg:#050b12; --card:#0e1726; --text:#d7e3ff; --muted:#93a3c0; --accent:#00d0ff; }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{margin:0;background:linear-gradient(180deg,#03060c,#0a1220);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial;display:flex;align-items:center;justify-content:center}
-    .card{width:min(92vw,380px);background:var(--card);border:1px solid #112540;border-radius:14px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    h1{margin:0 0 14px 0;font-size:20px;letter-spacing:.5px}
-    .by{font-size:12px;color:var(--muted);margin-bottom:12px}
-    label{display:block;font-size:12px;color:#c8defa;margin-top:10px;margin-bottom:4px}
-    input{width:100%;padding:10px;border-radius:10px;border:1px solid #143055;background:#0b1830;color:#d7e3ff}
-    button{width:100%;margin-top:14px;background:#0a1426;border:1px solid #173764;color:#cfe6ff;border-radius:10px;padding:10px;cursor:pointer}
-    .msg{min-height:18px;font-size:12px;color:#fda4af;margin-top:8px}
-    .ring{width:24px;height:24px;border-radius:50%;box-shadow:0 0 0 3px rgba(0,255,225,.3),inset 0 0 0 2px rgba(0,255,225,.6),0 0 18px 2px rgba(0,255,225,.4);display:inline-block;margin-right:8px;vertical-align:middle}
-  </style>
+  <title>NovaShield — JARVIS Edition</title>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="card">
-    <h1><span class="ring"></span>NovaShield — Login</h1>
-    <div class="by">by niteas aka MrNova420</div>
+  <header>
+    <div class="brand">
+      <div class="ring"></div>
+      <h1>NovaShield <span class="mini">JARVIS</span></h1>
+      <div class="by">by niteas aka MrNova420</div>
+    </div>
+    <div class="actions">
+      <button id="btn-refresh">Refresh</button>
+      <button data-act="backup">Backup</button>
+      <button data-act="version">Snapshot</button>
+      <button data-act="restart_monitors">Restart Monitors</button>
+    </div>
+  </header>
 
-    <label for="user">Username</label>
-    <input id="user" autocomplete="username" />
+  <nav class="tabs">
+    <button data-tab="status" class="active">Status</button>
+    <button data-tab="alerts">Alerts</button>
+    <button data-tab="files">Files</button>
+    <button data-tab="terminal">Terminal</button>
+    <button data-tab="ai">Jarvis</button>
+    <button data-tab="webgen">Web Builder</button>
+    <button data-tab="config">Config</button>
+    <button data-tab="admin">Admin</button>
+  </nav>
 
-    <label for="pass">Password</label>
-    <input id="pass" type="password" autocomplete="current-password" />
+  <main>
+    <section id="tab-status" class="tab active">
+      <section class="grid">
+        <div class="card" id="card-cpu"><h2>CPU</h2><div class="value" id="cpu"></div></div>
+        <div class="card" id="card-mem"><h2>Memory</h2><div class="value" id="mem"></div></div>
+        <div class="card" id="card-disk"><h2>Disk</h2><div class="value" id="disk"></div></div>
+        <div class="card" id="card-net"><h2>Network</h2><div class="value" id="net"></div></div>
+        <div class="card" id="card-int"><h2>Integrity</h2><div class="value" id="int"></div></div>
+        <div class="card" id="card-proc"><h2>Processes</h2><div class="value" id="proc"></div></div>
+        <div class="card" id="card-user"><h2>Users</h2><div class="value" id="user"></div></div>
+        <div class="card" id="card-svc"><h2>Services</h2><div class="value" id="svc"></div></div>
+        <div class="card" id="card-meta"><h2>Meta</h2><div class="value" id="meta"></div></div>
+      </section>
+      <div class="panel">
+        <h3>Monitors Control</h3>
+        <div class="toggles">
+          <button class="toggle" data-target="cpu">CPU</button>
+          <button class="toggle" data-target="memory">Memory</button>
+          <button class="toggle" data-target="disk">Disk</button>
+          <button class="toggle" data-target="network">Network</button>
+          <button class="toggle" data-target="integrity">Integrity</button>
+          <button class="toggle" data-target="process">Process</button>
+          <button class="toggle" data-target="userlogins">Users</button>
+          <button class="toggle" data-target="services">Services</button>
+          <button class="toggle" data-target="logs">Logs</button>
+          <button class="toggle" data-target="scheduler">Scheduler</button>
+        </div>
+      </div>
+    </section>
 
-    <label for="otp">2FA (if enabled)</label>
-    <input id="otp" inputmode="numeric" pattern="[0-9]*" />
+    <section id="tab-alerts" class="tab">
+      <div class="panel">
+        <h3>Alerts</h3>
+        <ul id="alerts"></ul>
+      </div>
+    </section>
 
-    <button id="login">Sign in</button>
-    <div class="msg" id="msg"></div>
+    <section id="tab-files" class="tab">
+      <div class="panel">
+        <h3>File Manager</h3>
+        <div class="filebar">
+          <input id="cwd" value="~/.novashield" />
+          <button id="btn-list">List</button>
+          <button id="btn-new-file">New File</button>
+          <button id="btn-new-folder">New Folder</button>
+        </div>
+        <div id="filelist"></div>
+        <div id="viewer" class="panel" style="display:none; margin-top:10px;">
+          <h3 id="viewer-title">Viewer</h3>
+          <textarea id="viewer-content" style="width:100%;height:300px;font-family:monospace;"></textarea>
+          <div class="file-actions">
+            <button id="btn-save-file">Save</button>
+            <button id="btn-close-viewer">Close</button>
+            <button id="btn-delete-file" style="background:#dc2626;">Delete</button>
+          </div>
+        </div>
+        <div class="file-actions">
+          <input id="newpath" placeholder="Path to create or save" />
+          <button id="btn-mkdir">Mkdir</button>
+          <button id="btn-save">Save Viewer -> Path</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-terminal" class="tab">
+      <div class="panel">
+        <h3>Web Terminal</h3>
+        <div id="term" tabindex="0"></div>
+        <div class="term-hint">Type here. Press Ctrl-C to interrupt. Idle timeout applies.</div>
+      </div>
+    </section>
+
+    <section id="tab-ai" class="tab">
+      <div class="panel">
+        <h3>Jarvis Assistant</h3>
+        <div id="chat">
+          <div id="chatlog"></div>
+          <div class="chatbox">
+            <input id="prompt" placeholder="Ask Jarvis... try: status, backup, IP" />
+            <button id="send">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-webgen" class="tab">
+      <div class="panel">
+        <h3>Website Builder</h3>
+        <input id="wtitle" placeholder="Page title" />
+        <textarea id="wcontent" placeholder="HTML content"></textarea>
+        <button id="wmake">Create Page</button>
+        <div id="wresult"></div>
+        <div class="panel" style="margin-top:15px;">
+          <h3>Existing Pages</h3>
+          <div id="page-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab">
+      <div class="panel">
+        <h3>Configuration Editor</h3>
+        <div class="config-actions">
+          <button id="btn-save-config">Save Config</button>
+          <button id="btn-reload-config">Reload</button>
+          <button id="btn-validate-config">Validate YAML</button>
+        </div>
+        <textarea id="config" style="width:100%;height:400px;font-family:monospace;white-space:pre-wrap;"></textarea>
+        <div id="config-msg" style="margin-top:8px;font-size:12px;"></div>
+      </div>
+    </section>
+
+    <section id="tab-admin" class="tab">
+      <div class="panel">
+        <h3>User Management</h3>
+        <div class="admin-section">
+          <h4>Add New User</h4>
+          <input id="new-username" placeholder="Username" />
+          <input id="new-password" type="password" placeholder="Password" />
+          <button id="btn-add-user">Add User</button>
+        </div>
+        <div class="admin-section">
+          <h4>Existing Users</h4>
+          <div id="user-list"></div>
+        </div>
+        <div class="admin-section">
+          <h4>System Actions</h4>
+          <button id="btn-backup-restore">Backup & Restore</button>
+          <button id="btn-notification-setup">Notification Setup</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="login" class="login" style="display:none;">
+    <div class="login-card">
+      <h3>Login Required</h3>
+      <input id="li-user" placeholder="Username" />
+      <input id="li-pass" type="password" placeholder="Password" />
+      <input id="li-otp" placeholder="2FA Code (if enabled)" />
+      <button id="li-btn">Sign In</button>
+      <div id="li-msg" style="color:#ef4444;font-size:12px;margin-top:8px;"></div>
+    </div>
   </div>
 
-  <script>
-    const $ = s => document.querySelector(s);
-    async function signin(){
-      const user=$('#user').value.trim();
-      const pass=$('#pass').value;
-      const otp=$('#otp').value.trim();
-      $('#login').disabled=true; $('#msg').textContent='';
-      try{
-        const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,pass,otp})});
-        if(!r.ok){ const j=await r.json().catch(()=>({})); $('#msg').textContent=j && j.need_2fa? '2FA required/invalid' : 'Login failed'; return; }
-        location.href='/';
-      }catch(e){ console.error(e); $('#msg').textContent='Login error'; }
-      finally{ $('#login').disabled=false; }
-    }
-    $('#login').onclick=signin; document.addEventListener('keydown',e=>{ if(e.key==='Enter') signin(); });
-    setTimeout(()=>$('#user').focus(),50);
-  </script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
