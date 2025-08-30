@@ -1,72 +1,276 @@
-# NovaShield-
-Custom private secured encrypted terminal NovaShield Terminal? In beta 
-Quick start
+# NovaShield — Advanced JARVIS Edition
 
-I built you a single, self-contained script that sets up the entire NovaShield Terminal 2.0 project end-to-end (installer + runtime). It:
+**NovaShield** is a comprehensive, self-contained security monitoring and administration dashboard for Termux and Linux systems. This latest **JARVIS Edition** features an advanced web interface with enterprise-level security, monitoring capabilities, and administrative tools.
 
-Detects Termux vs Linux, installs deps, creates the full directory tree.
+![NovaShield JARVIS Dashboard](https://github.com/user-attachments/assets/8b9ee72d-4708-497b-a052-8bc6fa9e57ee)
 
-Generates RSA + AES keys, encryption helpers (file/dir encrypt/decrypt).
+## 🚀 Features
 
-Starts 5 background monitors (CPU, memory, disk, network, integrity).
+### 🎛️ **Advanced JARVIS Dashboard**
+- **Modern UI**: Sleek, responsive design with JARVIS-themed interface
+- **Real-time Monitoring**: Live system status with CPU, memory, disk, and network metrics
+- **Multi-tab Interface**: Organized tabs for different system functions
+- **Mobile Responsive**: Works perfectly on desktop, tablet, and mobile devices
 
-Spins up a Python web dashboard (no external libs) with live status/alerts.
+### 🔐 **Enterprise Security**
+- **Multi-factor Authentication**: TOTP-based 2FA support
+- **Rate Limiting**: Automatic IP-based rate limiting (100 requests/minute)
+- **Account Lockout**: IP banning after 5 failed login attempts
+- **CSRF Protection**: Token-based CSRF protection for all API endpoints
+- **Secure Sessions**: HttpOnly, SameSite secure cookie management
+- **Enhanced Headers**: Security headers (XSS protection, content type options, etc.)
 
-Adds backup + version snapshots, rotation, and manual overrides.
+### 👥 **User Management**
+- **Admin Panel**: Complete user administration interface
+- **User CRUD Operations**: Add, delete, and manage users
+- **Password Management**: Secure password reset functionality
+- **2FA Management**: Enable/disable 2FA per user
+- **Session Management**: View and manage active sessions
 
-Supports Termux services or systemd-user (when available).
+### 📁 **File Manager**
+- **Full File Operations**: Browse, create, edit, delete, move, and rename files
+- **Security Boundaries**: Restricted to NovaShield directory for safety
+- **Syntax Highlighting**: Built-in file viewer with editing capabilities
+- **Directory Navigation**: Intuitive directory browsing
+- **Bulk Operations**: Support for multiple file operations
 
-Provides a CLI + interactive menu.
+### 💬 **Jarvis AI Assistant**
+- **Intelligent Responses**: Context-aware AI assistant
+- **System Integration**: Direct system status and control queries
+- **Chat History**: Persistent conversation logging
+- **Help System**: Built-in help and guidance
 
+### 🖥️ **Web Terminal**
+- **Full Terminal Access**: Complete shell access through web interface
+- **WebSocket Connection**: Real-time terminal interaction
+- **Secure Sessions**: Authenticated terminal access
+- **Keyboard Support**: Full keyboard shortcut support
 
-I put the complete all-in-one script in the canvas (left panel) as “NovaShield Terminal 2.0 — All-in-One Installer & Runtime (novashield.sh)”. Save it as novashield.sh, make it executable, and run the steps below.
+### 📊 **System Monitoring**
+- **Real-time Metrics**: Live CPU, memory, disk, and network monitoring
+- **Alert System**: Configurable system alerts and notifications
+- **Historical Data**: System performance tracking
+- **Service Monitoring**: Monitor critical system services
 
-# 1) Save the script
-nano novashield.sh   # paste the canvas contents
+### 🔧 **Configuration Management**
+- **Live Config Editor**: Real-time YAML configuration editing
+- **Validation**: Built-in YAML syntax validation
+- **Backup/Restore**: Automatic config backup and restore
+- **Safe Editing**: Configuration backup before changes
+
+### 📧 **Notification System**
+- **Email Notifications**: SMTP-based email alerts
+- **Telegram Integration**: Telegram bot messaging
+- **Discord Webhooks**: Discord channel notifications
+- **Test Functions**: Built-in notification testing
+
+### 💾 **Backup & Restore**
+- **Automated Backups**: Scheduled and manual backup creation
+- **Full System Restore**: Complete system state restoration
+- **Backup Management**: List, download, and manage backups
+- **Encrypted Storage**: Secure backup storage
+
+## 📦 Installation
+
+### Quick Installation
+
+```bash
+# 1) Download and make executable
+curl -O https://raw.githubusercontent.com/MrNova420/NovaShield/main/novashield.sh
 chmod +x novashield.sh
 
-# 2) One-shot install (creates ~/.novashield and all subfiles)
+# 2) One-shot install (creates ~/.novashield and all components)
 ./novashield.sh --install
 
-# 3) Start everything (monitors + web dashboard)
+# 3) Start all services (monitors + web dashboard)
 ./novashield.sh --start
+```
 
-# 4) (optional) Check status
-./novashield.sh --status
+### Manual Setup
 
-Then open the local dashboard (by default):
-http://127.0.0.1:8765
+```bash
+# Clone the repository
+git clone https://github.com/MrNova420/NovaShield.git
+cd NovaShield
 
-Useful commands
+# Make the script executable
+chmod +x novashield.sh
 
-./novashield.sh --menu – interactive TUI for common actions
+# Install dependencies and setup
+./novashield.sh --install
 
-./novashield.sh --backup – encrypted snapshot with rotation
+# Start the system
+./novashield.sh --start
+```
 
-./novashield.sh --version-snapshot – copy of modules/projects/config/logs
+## 🌐 Accessing the Dashboard
 
-./novashield.sh --encrypt <path> / --decrypt <file.enc> – AES-256 via OpenSSL
+After installation and startup, access the dashboard at:
+- **Local Access**: http://127.0.0.1:8765
+- **LAN Access**: Set `allow_lan: true` in config.yaml, then http://YOUR_IP:8765
 
-./novashield.sh --restart-monitors – bounce the background monitors
+### Default Access
+- If authentication is disabled: Direct access to dashboard
+- If authentication is enabled: Login screen will appear
+- First-time setup will prompt for initial user creation
 
-./novashield.sh --web-start / --web-stop – control the dashboard server
+## 🎮 Usage
 
-./novashield.sh --stop – stop everything
+### Command Line Interface
 
+```bash
+# Interactive menu
+./novashield.sh --menu
 
-Notes & next steps
+# System control
+./novashield.sh --start          # Start all services
+./novashield.sh --stop           # Stop all services
+./novashield.sh --restart        # Restart services
+./novashield.sh --status         # Check status
 
-Termux services: If termux-services is installed, the script drops a service at ~/.termux/services/novashield. You can enable/disable with sv-enable novashield / sv-disable novashield.
+# Backup operations
+./novashield.sh --backup         # Create encrypted backup
+./novashield.sh --restore        # Restore from backup
 
-systemd-user (Linux): Creates ~/.config/systemd/user/novashield.service. Enable with:
+# File operations
+./novashield.sh --encrypt <path> # Encrypt file/directory
+./novashield.sh --decrypt <file> # Decrypt file
 
-systemctl --user enable --now novashield
+# Version management
+./novashield.sh --version-snapshot  # Create version snapshot
 
-LAN access: To expose the dashboard on your LAN, set allow_lan: true in ~/.novashield/config.yaml and restart.
+# Service control
+./novashield.sh --web-start      # Start web server only
+./novashield.sh --web-stop       # Stop web server only
+./novashield.sh --restart-monitors  # Restart monitors only
+```
 
-Security: Keys live in ~/.novashield/keys/ with 600 perms. Backups can be encrypted by default. Keep your AES key safe.
+### Web Dashboard Features
 
-Extend: Drop your own scripts into ~/.novashield/modules/ and your work into ~/.novashield/projects/.
+#### 📊 **Status Tab**
+- Real-time system metrics
+- Monitor control buttons
+- System health indicators
+- Performance graphs
 
+#### 🚨 **Alerts Tab**
+- Recent system alerts
+- Alert history
+- Notification status
+- Alert configuration
 
-If you want me to also package this into a ready-to-push GitHub repo layout (README, LICENSE, .gitignore, screenshots), say the word and I’ll generate those files too.
+#### 📁 **Files Tab**
+- File browser with full CRUD operations
+- Built-in text editor
+- File upload/download
+- Directory management
+- Security-restricted access
+
+#### 🖥️ **Terminal Tab**
+- Full web-based terminal
+- Real-time command execution
+- Secure authenticated access
+- Keyboard shortcut support
+
+#### 🤖 **Jarvis Tab**
+- AI assistant chat interface
+- System query capabilities
+- Help and guidance
+- Command suggestions
+
+#### 👥 **Admin Tab** (Admin users only)
+- **User Management**: Add, delete, reset passwords
+- **2FA Configuration**: Enable/disable per user
+- **Notification Setup**: Configure email, Telegram, Discord
+- **Backup Management**: Create, restore, download backups
+
+#### ⚙️ **Config Tab**
+- Live YAML configuration editing
+- Real-time syntax validation
+- Automatic backup before changes
+- Configuration history
+
+## 🔧 Configuration
+
+### Main Configuration (`~/.novashield/config.yaml`)
+
+```yaml
+# Server Configuration
+host: "127.0.0.1"
+port: 8765
+allow_lan: false
+
+# Security Settings
+security:
+  auth_enabled: true
+  auth_salt: "your-secret-salt"
+  session_timeout: 3600
+  max_login_attempts: 5
+  lockout_duration: 300
+
+# Monitoring Settings
+monitoring:
+  cpu_warning: 80
+  cpu_critical: 95
+  memory_warning: 80
+  memory_critical: 95
+  disk_warning: 85
+  disk_critical: 95
+
+# Notification Settings
+notifications:
+  email_enabled: false
+  telegram_enabled: false
+  discord_enabled: false
+  alert_levels: ["CRIT", "WARN", "ERROR"]
+
+# Backup Settings
+backup:
+  auto_backup: true
+  backup_interval: 86400  # 24 hours
+  max_backups: 10
+  encryption_enabled: true
+```
+
+## 🏗️ Architecture
+
+### Components
+- **novashield.sh**: Main installer and runtime script
+- **Web Server**: Python-based HTTP server with API
+- **Frontend**: Modern JavaScript SPA with JARVIS theme
+- **Monitoring**: Background system monitors
+- **Database**: JSON-based data storage
+- **Security**: Multi-layer security implementation
+
+### Directory Structure
+```
+~/.novashield/
+├── www/                    # Web interface files
+│   ├── index.html         # Main dashboard
+│   ├── login.html         # Login page
+│   ├── app.js             # Frontend application
+│   ├── style.css          # JARVIS theme styles
+│   └── server.py          # Backend server
+├── logs/                   # System and audit logs
+├── control/               # Session and control data
+├── keys/                  # Encryption keys
+├── backups/               # System backups
+├── modules/               # Custom modules
+├── projects/              # User projects
+├── versions/              # Version snapshots
+└── config.yaml           # Main configuration
+```
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **niteas aka MrNova420** - Original creator and maintainer
+- **Community Contributors** - Feature requests and testing
+- **Open Source Libraries** - Various dependencies and inspirations
+
+---
+
+**NovaShield JARVIS Edition** - Your Advanced Security Companion 🛡️
