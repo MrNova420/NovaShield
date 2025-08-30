@@ -45,11 +45,34 @@ def write_json(path, obj):
 
 def yaml_val(key, default=None):
     try:
+        # Handle nested keys like 'security.auth_enabled'
+        keys = key.split('.')
+        current_section = None
+        
         for line in open(CONFIG,'r',encoding='utf-8'):
             s=line.split('#',1)[0].strip()
             if not s: continue
-            if s.startswith(key+':'):
+            
+            # Check if this is a section header
+            if ':' in s and not s.startswith(' ') and not s.startswith('-'):
+                parts = s.split(':', 1)
+                if len(parts) == 2 and not parts[1].strip():
+                    # This is a section header like "security:"
+                    current_section = parts[0].strip()
+                    continue
+                elif len(keys) == 1 and s.startswith(key + ':'):
+                    # Direct key match
+                    return s.split(':',1)[1].strip().strip('"').strip("'")
+            
+            # Check if we're in the right section for nested keys
+            if len(keys) == 2 and current_section == keys[0]:
+                if s.startswith(keys[1] + ':') or s.startswith('  ' + keys[1] + ':'):
+                    return s.split(':',1)[1].strip().strip('"').strip("'")
+            
+            # Handle direct single key match
+            if len(keys) == 1 and s.startswith(key+':'):
                 return s.split(':',1)[1].strip().strip('"').strip("'")
+                
     except Exception:
         return default
     return default
